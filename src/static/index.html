@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hospital Price Search</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f4f4f9; }
+        h1 { text-align: center; color: #333; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 20px; }
+        input { flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        
+        .result-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        .item-title { font-weight: bold; font-size: 1.1em; margin-bottom: 5px; color: #2c3e50; }
+        .item-code { color: #7f8c8d; font-size: 0.9em; margin-bottom: 10px; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
+        th { background-color: #f8f9fa; color: #666; font-size: 0.9em; }
+        .price { text-align: right; font-weight: bold; color: #27ae60; }
+        .payer-cash { background-color: #e8f5e9; }
+    </style>
+</head>
+<body>
+
+    <h1>🏥 Hospital Price Search</h1>
+    
+    <div class="search-box">
+        <input type="text" id="searchInput" placeholder="Search for a procedure (e.g. MRI, X-Ray, Abutment)..." onkeypress="handleEnter(event)">
+        <button onclick="search()">Search</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        async function search() {
+            const query = document.getElementById('searchInput').value;
+            if (!query) return;
+
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<p style="text-align:center; color:#666;">Searching...</p>';
+
+            try {
+                const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
+                const data = await response.json();
+
+                if (data.count === 0) {
+                    resultsDiv.innerHTML = '<p style="text-align:center;">No results found.</p>';
+                    return;
+                }
+
+                let html = '';
+                data.results.forEach(item => {
+                    // Sort prices: Cash first, then cheapest to expensive
+                    const prices = item.prices.sort((a, b) => {
+                        if (a.payer === 'DISCOUNTED_CASH') return -1;
+                        if (b.payer === 'DISCOUNTED_CASH') return 1;
+                        return a.amount - b.amount;
+                    });
+
+                    html += `
+                        <div class="result-card">
+                            <div class="item-title">
+                                ${item.description} 
+                                <span style="font-size:0.8em; background:#e0e0e0; padding:2px 6px; border-radius:4px; margin-left:10px;">${item.setting || 'Unknown'}</span>
+                            </div>
+                            <div class="item-code">Code: ${item.code} | Hospital: ${item.hospital_id}</div>
+                            
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Payer / Plan</th>
+                                        <th style="text-align:right;">Price</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${prices.map(p => `
+                                        <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
+                                            <td>${p.payer} ${p.plan ? `<span style="color:#888; font-size:0.9em;">(${p.plan})</span>` : ''}</td>
+                                            <td class="price">$${p.amount.toFixed(2)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                });
+
+                resultsDiv.innerHTML = html;
+            } catch (err) {
+                resultsDiv.innerHTML = '<p style="text-align:center; color:red;">Error fetching results.</p>';
+                console.error(err);
+            }
+        }
+
+        function handleEnter(e) {
+            if (e.key === 'Enter') search();
+        }
+    </script>
+
+</body>
+</html>
+

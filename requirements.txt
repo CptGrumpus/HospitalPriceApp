@@ -1,4 +1,5 @@
 requests
 pandas
 sqlalchemy
-
+fastapi
+uvicorn

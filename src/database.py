@@ -14,7 +14,8 @@ class Item(Base):
     id = Column(Integer, primary_key=True, index=True)
     code = Column(String, index=True)  # e.g., "99213"
     description = Column(String)       # e.g., "Office Visit Level 3"
-    hospital_id = Column(String)       # To track which hospital this came from (optional for now)
+    hospital_id = Column(String)       # To track which hospital this came from
+    setting = Column(String)           # e.g., "inpatient", "outpatient", "facility"
 
     # Relationship to prices
     prices = relationship("Price", back_populates="item", cascade="all, delete-orphan")
@@ -40,4 +41,3 @@ def init_db():
 
 if __name__ == "__main__":
     init_db()
-
