@@ -13,8 +13,9 @@
         button:hover { background: #0056b3; }
         
         .result-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; }
-        .item-title { font-weight: bold; font-size: 1.1em; margin-bottom: 5px; color: #2c3e50; }
-        .item-code { color: #7f8c8d; font-size: 0.9em; margin-bottom: 10px; }
+        .hospital-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; color: white; display: inline-block; margin-bottom: 5px; }
+        .hosp-uofm { background-color: #00274c; } /* Michigan Blue */
+        .hosp-beaumont { background-color: #6a1b9a; } /* Purple/Generic */
         
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
@@ -53,6 +54,12 @@
 
                 let html = '';
                 data.results.forEach(item => {
+                    // Format setting
+                    let settingDisplay = item.setting || 'Unknown';
+                    if (settingDisplay.toLowerCase() === 'both') settingDisplay = 'Inpatient/Outpatient';
+                    else if (settingDisplay.toLowerCase() === 'facility') settingDisplay = 'Facility';
+                    else settingDisplay = settingDisplay.charAt(0).toUpperCase() + settingDisplay.slice(1);
+
                     // Sort prices: Cash first, then cheapest to expensive
                     const prices = item.prices.sort((a, b) => {
                         if (a.payer === 'DISCOUNTED_CASH') return -1;
@@ -62,11 +69,12 @@
 
                     html += `
                         <div class="result-card">
+                            <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
                             <div class="item-title">
                                 ${item.description} 
-                                <span style="font-size:0.8em; background:#e0e0e0; padding:2px 6px; border-radius:4px; margin-left:10px;">${item.setting || 'Unknown'}</span>
+                                <span style="font-size:0.8em; background:#e0e0e0; padding:2px 6px; border-radius:4px; margin-left:10px; font-weight:normal;">${settingDisplay}</span>
                             </div>
-                            <div class="item-code">Code: ${item.code} | Hospital: ${item.hospital_id}</div>
+                            <div class="item-code">Code: ${item.code} <span style="color:#999">(${item.code_type || 'N/A'})</span></div>
                             
                             <table>
                                 <thead>

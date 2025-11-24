@@ -44,10 +44,17 @@ def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
             # Note: Column names 'code' and 'description' are assumed standard for now.
             # UofM uses "code|1" as the primary code.
             code = row.get('code|1', row.get('code', 'UNKNOWN'))
+            code_type = row.get('code|1|type', 'UNKNOWN')
             desc = row.get('description', 'No Description')
             setting = row.get('billing_class', 'UNKNOWN')
             
-            item = Item(code=code, description=desc, hospital_id=hospital_id, setting=setting)
+            item = Item(
+                code=code, 
+                code_type=code_type,
+                description=desc, 
+                hospital_id=hospital_id, 
+                setting=setting
+            )
             session.add(item)
             session.flush() # Get the ID of the new item
 
