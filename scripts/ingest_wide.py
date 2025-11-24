@@ -40,17 +40,56 @@ def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
         # Iterate through rows
         count = 0
         for index, row in df.iterrows():
-            # 1. Create the Item
-            # Note: Column names 'code' and 'description' are assumed standard for now.
-            # UofM uses "code|1" as the primary code.
-            code = row.get('code|1', row.get('code', 'UNKNOWN'))
-            code_type = row.get('code|1|type', 'UNKNOWN')
+            # 1. Smart Code Extraction
+            # We want to prioritize standard codes (CPT, HCPCS, DRG) over internal CDM codes
+            
+            final_code = row.get('code|1', 'UNKNOWN')
+            final_type = row.get('code|1|type', 'UNKNOWN')
+            
+            # Scan columns 1 through 5 (assumed max) for a better code
+            # We prioritize: CPT > HCPCS > MS-DRG > APR-DRG > NDC > CDM
+            
+            priority_map = {
+                'CPT': 1,
+                'HCPCS': 2,
+                'MS-DRG': 3,
+                'APR-DRG': 4,
+                'NDC': 5,
+                'CDM': 99,
+                'Local': 99,
+                'RC': 99,
+                'UNKNOWN': 100
+            }
+            
+            current_priority = priority_map.get(final_type, 100)
+            
+            for i in range(1, 6):
+                code_col = f'code|{i}'
+                type_col = f'code|{i}|type'
+                
+                if code_col in row and type_col in row:
+                    this_code = row[code_col]
+                    this_type = row[type_col]
+                    
+                    if pd.isna(this_code) or pd.isna(this_type):
+                        continue
+                        
+                    this_prio = priority_map.get(this_type, 100)
+                    
+                    # If this code is higher priority (lower number), swap it in
+                    if this_prio < current_priority:
+                        final_code = this_code
+                        final_type = this_type
+                        current_priority = this_prio
+            
+            # -------------------------------------------------------
+            
             desc = row.get('description', 'No Description')
             setting = row.get('billing_class', 'UNKNOWN')
             
             item = Item(
-                code=code, 
-                code_type=code_type,
+                code=final_code, 
+                code_type=final_type,
                 description=desc, 
                 hospital_id=hospital_id, 
                 setting=setting
@@ -98,11 +137,6 @@ def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
                 print(f"Processed {count} rows...")
                 session.commit() # Commit every 1000 rows
                 
-            # DEBUG LIMIT REMOVED for full ingestion
-            # if count >= 500:
-            #     print("--- DEBUG LIMIT REACHED (500 rows) ---")
-            #     break
-
         session.commit()
         print("--- Ingestion Complete ---")
 

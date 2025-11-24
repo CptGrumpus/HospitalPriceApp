@@ -12,7 +12,15 @@
         button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         button:hover { background: #0056b3; }
         
-        .result-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        .result-card { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; overflow: hidden; }
+        .card-header { padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .card-header:hover { background-color: #f9f9f9; }
+        .header-content { flex: 1; }
+        .toggle-icon { font-size: 1.2em; color: #007bff; transition: transform 0.3s ease; margin-left: 15px; }
+        .toggle-icon.expanded { transform: rotate(90deg); }
+        
+        .card-body { display: none; padding: 0 15px 15px 15px; }
+        
         .hospital-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; color: white; display: inline-block; margin-bottom: 5px; }
         .hosp-uofm { background-color: #00274c; } /* Michigan Blue */
         .hosp-beaumont { background-color: #6a1b9a; } /* Purple/Generic */
@@ -22,6 +30,9 @@
         th { background-color: #f8f9fa; color: #666; font-size: 0.9em; }
         .price { text-align: right; font-weight: bold; color: #27ae60; }
         .payer-cash { background-color: #e8f5e9; }
+        @media (max-width: 600px) {
+            .filters-box { flex-direction: column; }
+        }
     </style>
 </head>
 <body>
@@ -33,49 +44,149 @@
         <button onclick="search()">Search</button>
     </div>
 
+    <div class="filters-box" style="display:none; gap: 10px; margin-bottom: 20px; padding: 10px; background: #e9ecef; border-radius: 4px;">
+        <select id="hospitalFilter" onchange="applyFilters()">
+            <option value="">All Hospitals</option>
+        </select>
+        <select id="settingFilter" onchange="applyFilters()">
+            <option value="">All Settings</option>
+        </select>
+        <input type="text" id="textFilter" placeholder="Filter by Payer, Code, or Description..." oninput="applyFilters()" style="padding: 8px;">
+    </div>
+
     <div id="results"></div>
 
     <script>
+        let allData = [];
+
         async function search() {
             const query = document.getElementById('searchInput').value;
             if (!query) return;
 
             const resultsDiv = document.getElementById('results');
+            const filtersBox = document.querySelector('.filters-box');
             resultsDiv.innerHTML = '<p style="text-align:center; color:#666;">Searching...</p>';
+            filtersBox.style.display = 'none';
 
             try {
                 const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
                 const data = await response.json();
+                
+                allData = data.results; // Store global data
 
                 if (data.count === 0) {
                     resultsDiv.innerHTML = '<p style="text-align:center;">No results found.</p>';
                     return;
                 }
+                
+                populateFilters(allData);
+                filtersBox.style.display = 'flex';
+                renderResults(allData);
 
-                let html = '';
-                data.results.forEach(item => {
-                    // Format setting
-                    let settingDisplay = item.setting || 'Unknown';
-                    if (settingDisplay.toLowerCase() === 'both') settingDisplay = 'Inpatient/Outpatient';
-                    else if (settingDisplay.toLowerCase() === 'facility') settingDisplay = 'Facility';
-                    else settingDisplay = settingDisplay.charAt(0).toUpperCase() + settingDisplay.slice(1);
+            } catch (err) {
+                resultsDiv.innerHTML = '<p style="text-align:center; color:red;">Error fetching results.</p>';
+                console.error(err);
+            }
+        }
 
-                    // Sort prices: Cash first, then cheapest to expensive
-                    const prices = item.prices.sort((a, b) => {
-                        if (a.payer === 'DISCOUNTED_CASH') return -1;
-                        if (b.payer === 'DISCOUNTED_CASH') return 1;
-                        return a.amount - b.amount;
-                    });
+        function populateFilters(results) {
+            // Get unique hospitals and settings
+            const hospitals = [...new Set(results.map(r => r.hospital_id))].sort();
+            const settings = [...new Set(results.map(r => r.setting || 'Unknown'))].sort();
+            
+            const hospSelect = document.getElementById('hospitalFilter');
+            const settSelect = document.getElementById('settingFilter');
+            
+            hospSelect.innerHTML = '<option value="">All Hospitals</option>' + 
+                hospitals.map(h => `<option value="${h}">${h}</option>`).join('');
+                
+            settSelect.innerHTML = '<option value="">All Settings</option>' + 
+                settings.map(s => `<option value="${s}">${s}</option>`).join('');
+        }
 
-                    html += `
-                        <div class="result-card">
-                            <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
-                            <div class="item-title">
-                                ${item.description} 
-                                <span style="font-size:0.8em; background:#e0e0e0; padding:2px 6px; border-radius:4px; margin-left:10px; font-weight:normal;">${settingDisplay}</span>
+        function applyFilters() {
+            const hospValue = document.getElementById('hospitalFilter').value;
+            const settValue = document.getElementById('settingFilter').value;
+            const textValue = document.getElementById('textFilter').value.toLowerCase();
+
+            renderResults(allData, hospValue, settValue, textValue);
+        }
+
+        function renderResults(data, hospitalFilter = "", settingFilter = "", textFilter = "") {
+            const resultsDiv = document.getElementById('results');
+            let html = '';
+            let visibleCount = 0;
+
+            data.forEach(item => {
+                // 1. Filter by Hospital
+                if (hospitalFilter && item.hospital_id !== hospitalFilter) return;
+
+                // 2. Filter by Setting
+                const itemSetting = item.setting || 'Unknown';
+                if (settingFilter && itemSetting !== settingFilter) return;
+
+                // 3. Smart Filter Logic
+                // Matches if text matches Code OR Description OR any Payer
+                const codeMatch = (item.code || '').toLowerCase().includes(textFilter);
+                const descMatch = (item.description || '').toLowerCase().includes(textFilter);
+                
+                // Filter prices based on text match if it's NOT a code/desc match
+                // If it IS a code/desc match, show all prices.
+                // If it is NOT, only show prices that match the payer name.
+                
+                let displayPrices = item.prices;
+                
+                if (textFilter) {
+                    // Check if any payer matches
+                    const payerMatches = item.prices.filter(p => 
+                        (p.payer + " " + (p.plan || "")).toLowerCase().includes(textFilter)
+                    );
+
+                    if (codeMatch || descMatch) {
+                        // If the code or description matches, we show the card.
+                        // We still might want to highlight or filter payers, but typically
+                        // if I search for a code, I want to see all prices for that code.
+                        // Let's keep all prices visible if the top-level item matches.
+                        displayPrices = item.prices;
+                    } else if (payerMatches.length > 0) {
+                        // If top-level didn't match, but some payers did, show only those payers.
+                        displayPrices = payerMatches;
+                    } else {
+                        // Nothing matches
+                        return; 
+                    }
+                }
+
+                // Format setting display
+                let settingDisplay = itemSetting;
+                if (settingDisplay.toLowerCase() === 'both') settingDisplay = 'Inpatient/Outpatient';
+                else if (settingDisplay.toLowerCase() === 'facility') settingDisplay = 'Facility';
+                else settingDisplay = settingDisplay.charAt(0).toUpperCase() + settingDisplay.slice(1);
+                
+                // Sort prices
+                const prices = displayPrices.sort((a, b) => {
+                    if (a.payer === 'DISCOUNTED_CASH') return -1;
+                    if (b.payer === 'DISCOUNTED_CASH') return 1;
+                    return a.amount - b.amount;
+                });
+
+                visibleCount++;
+
+                html += `
+                    <div class="result-card">
+                        <div class="card-header" onclick="toggleResult(this)">
+                            <div class="header-content">
+                                <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
+                                <div class="item-title">
+                                    ${item.description} 
+                                    <span style="font-size:0.8em; background:#e0e0e0; padding:2px 6px; border-radius:4px; margin-left:10px; font-weight:normal;">${settingDisplay}</span>
+                                </div>
+                                <div class="item-code">Code: ${item.code} <span style="color:#999">(${item.code_type || 'N/A'})</span></div>
                             </div>
-                            <div class="item-code">Code: ${item.code} <span style="color:#999">(${item.code_type || 'N/A'})</span></div>
-                            
+                            <div class="toggle-icon">&gt;</div>
+                        </div>
+                        
+                        <div class="card-body">
                             <table>
                                 <thead>
                                     <tr>
@@ -84,27 +195,41 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${prices.map(p => `
+                                    ${prices.length > 0 ? prices.map(p => `
                                         <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
                                             <td>${p.payer} ${p.plan ? `<span style="color:#888; font-size:0.9em;">(${p.plan})</span>` : ''}</td>
-                                            <td class="price">$${p.amount.toFixed(2)}</td>
+                                            <td class="price">${p.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</td>
                                         </tr>
-                                    `).join('')}
+                                    `).join('') : '<tr><td colspan="2" style="text-align:center; padding:10px;">No prices match filter</td></tr>'}
                                 </tbody>
                             </table>
                         </div>
-                    `;
-                });
-
+                    </div>
+                `;
+            });
+            
+            if (visibleCount === 0) {
+                resultsDiv.innerHTML = '<p style="text-align:center;">No results match your filters.</p>';
+            } else {
                 resultsDiv.innerHTML = html;
-            } catch (err) {
-                resultsDiv.innerHTML = '<p style="text-align:center; color:red;">Error fetching results.</p>';
-                console.error(err);
             }
         }
 
         function handleEnter(e) {
             if (e.key === 'Enter') search();
+        }
+
+        function toggleResult(header) {
+            const body = header.nextElementSibling;
+            const icon = header.querySelector('.toggle-icon');
+            
+            if (body.style.display === 'block') {
+                body.style.display = 'none';
+                icon.classList.remove('expanded');
+            } else {
+                body.style.display = 'block';
+                icon.classList.add('expanded');
+            }
         }
     </script>
 

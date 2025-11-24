@@ -37,8 +37,44 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
         count = 0
         
         for index, row in df.iterrows():
-            code = row.get('code|1', 'UNKNOWN')
-            code_type = row.get('code|1|type', 'UNKNOWN')
+            # 1. Smart Code Extraction (COPIED FROM WIDE SCRIPT)
+            final_code = row.get('code|1', 'UNKNOWN')
+            final_type = row.get('code|1|type', 'UNKNOWN')
+            
+            priority_map = {
+                'CPT': 1,
+                'HCPCS': 2,
+                'MS-DRG': 3,
+                'APR-DRG': 4,
+                'NDC': 5,
+                'CDM': 99,
+                'Local': 99,
+                'RC': 99,
+                'UNKNOWN': 100
+            }
+            current_priority = priority_map.get(final_type, 100)
+            
+            for i in range(1, 6):
+                code_col = f'code|{i}'
+                type_col = f'code|{i}|type'
+                
+                if code_col in row and type_col in row:
+                    this_code = row[code_col]
+                    this_type = row[type_col]
+                    
+                    if pd.isna(this_code) or pd.isna(this_type):
+                        continue
+                        
+                    this_prio = priority_map.get(this_type, 100)
+                    
+                    # If this code is higher priority (lower number), swap it in
+                    if this_prio < current_priority:
+                        final_code = this_code
+                        final_type = this_type
+                        current_priority = this_prio
+            
+            # -----------------------------------------------------
+
             desc = row.get('description', 'No Description')
             
             # Prefer 'setting' column (e.g. 'outpatient'), fallback to 'billing_class'
@@ -47,15 +83,16 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                 setting = row.get('billing_class', 'UNKNOWN')
             
             # 1. Resolve Item (Get ID or Create New)
-            item_key = (code, desc, setting)
+            # NOTE: We use final_code here so we cache based on the standardized code!
+            item_key = (final_code, desc, setting)
             
             if item_key in item_cache:
                 item_id = item_cache[item_key]
             else:
                 # Create new item
                 new_item = Item(
-                    code=code, 
-                    code_type=code_type,
+                    code=final_code, 
+                    code_type=final_type,
                     description=desc, 
                     hospital_id=hospital_id, 
                     setting=setting

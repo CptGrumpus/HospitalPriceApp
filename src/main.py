@@ -36,7 +36,7 @@ def search_items(q: str, db: Session = Depends(get_db)):
     # Join Items and Prices and filter
     items = db.query(Item).options(joinedload(Item.prices)).filter(
         (Item.description.ilike(search_term)) | (Item.code.ilike(search_term))
-    ).limit(100).all()
+    ).limit(10000).all()
     
     results = []
     for item in items:
