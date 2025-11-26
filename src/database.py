@@ -34,6 +34,13 @@ class Price(Base):
     # Relationship back to item
     item = relationship("Item", back_populates="prices")
 
+class CodeDefinition(Base):
+    __tablename__ = "code_definitions"
+    
+    code = Column(String, primary_key=True, index=True)
+    long_description = Column(String)
+    short_description = Column(String)
+
 def init_db():
     """Creates the tables in the database if they don't exist."""
     print("--- Creating Database Tables ---")

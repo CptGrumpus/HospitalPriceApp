@@ -82,6 +82,15 @@ def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
                         final_type = this_type
                         current_priority = this_prio
             
+            # NORMALIZE: Force CPT vs HCPCS based on format
+            # CPT: 5 digits (numeric)
+            # HCPCS: Letter + 4 digits (or similar)
+            if len(str(final_code).strip()) == 5:
+                if str(final_code).isdigit():
+                    final_type = 'CPT'
+                elif str(final_code)[0].isalpha():
+                    final_type = 'HCPCS'
+
             # -------------------------------------------------------
             
             desc = row.get('description', 'No Description')

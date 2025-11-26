@@ -5,11 +5,18 @@ from sqlalchemy.orm import Session
 from src.database import SessionLocal, Item, Price, init_db
 
 def parse_price(price_str):
-    if pd.isna(price_str) or price_str == '':
+    if pd.isna(price_str) or price_str == '' or str(price_str).strip() == '':
         return None
     try:
+        # Remove $ and , and convert to float
         clean = str(price_str).replace('$', '').replace(',', '').strip()
-        return float(clean)
+        val = float(clean)
+        
+        # FILTER: Ignore placeholder prices often found in Children's data
+        if val >= 99999999:
+            return None
+            
+        return val
     except:
         return None
 
@@ -21,12 +28,21 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
 
     try:
         print("Reading CSV... (this may take a moment)")
-        # Beaumont uses header on row 3 (index 2)
+        # 1. Auto-Detect Header Row
+        # Beaumont uses header=2 (Row 3)
+        # Children's uses header=2 (Row 3)
+        # So we can try header=2 first. If columns look wrong, maybe try others?
+        # For now, both seem to be header=2.
+        
         try:
             df = pd.read_csv(file_path, header=2, dtype=str, encoding='utf-8')
         except UnicodeDecodeError:
             print("UTF-8 failed. Trying ISO-8859-1...")
             df = pd.read_csv(file_path, header=2, dtype=str, encoding='iso-8859-1')
+            
+        # Verify we have expected columns
+        if 'code|1' not in df.columns and 'description' not in df.columns:
+            print("WARNING: Header detection might be wrong. Columns found:", df.columns[:5])
         
         print(f"Loaded {len(df)} rows. Processing...")
 
@@ -37,7 +53,7 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
         count = 0
         
         for index, row in df.iterrows():
-            # 1. Smart Code Extraction (COPIED FROM WIDE SCRIPT)
+            # 1. Smart Code Extraction (Standard Logic)
             final_code = row.get('code|1', 'UNKNOWN')
             final_type = row.get('code|1|type', 'UNKNOWN')
             
@@ -64,6 +80,11 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                     
                     if pd.isna(this_code) or pd.isna(this_type):
                         continue
+
+                    # VALIDATION: Ignore bogus HCPCS/CPT codes
+                    if this_type in ['CPT', 'HCPCS']:
+                        if len(str(this_code).strip()) != 5:
+                            this_type = 'Local'
                         
                     this_prio = priority_map.get(this_type, 100)
                     
@@ -73,6 +94,15 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                         final_type = this_type
                         current_priority = this_prio
             
+            # NORMALIZE: Force CPT vs HCPCS based on format
+            # CPT: 5 digits (numeric)
+            # HCPCS: Letter + 4 digits (or similar)
+            if len(str(final_code).strip()) == 5:
+                if str(final_code).isdigit():
+                    final_type = 'CPT'
+                elif str(final_code)[0].isalpha():
+                    final_type = 'HCPCS'
+
             # -----------------------------------------------------
 
             desc = row.get('description', 'No Description')
@@ -83,7 +113,6 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                 setting = row.get('billing_class', 'UNKNOWN')
             
             # 1. Resolve Item (Get ID or Create New)
-            # NOTE: We use final_code here so we cache based on the standardized code!
             item_key = (final_code, desc, setting)
             
             if item_key in item_cache:
@@ -104,11 +133,16 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
 
             # 2. Create Price
             # Tall CSV has payer/plan in columns
-            payer = row.get('payer_name')
-            plan = row.get('plan_name', None)
             
-            # A. Negotiated Price (If Payer exists)
-            if not pd.isna(payer) and payer != '':
+            # Strategy: Look for specific columns.
+            # Beaumont uses: 'payer_name', 'plan_name', 'standard_charge|negotiated_dollar'
+            # Children's uses: 'standard_charge|Payer|Plan|negotiated_dollar'
+            
+            # Branch A: If 'payer_name' column exists (Beaumont Style)
+            if 'payer_name' in row and not pd.isna(row['payer_name']):
+                payer = row.get('payer_name')
+                plan = row.get('plan_name', None)
+                
                 price_str = row.get('standard_charge|negotiated_dollar')
                 if pd.isna(price_str) or price_str == '':
                     price_str = row.get('estimated_amount')
@@ -117,13 +151,37 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                 if price_val is not None:
                     session.add(Price(item_id=item_id, payer=payer, plan=plan, amount=price_val))
 
-            # B. Gross / Cash Prices
+            # Branch B: If columns define payers (Children's Style)
+            # We scan columns for 'negotiated_dollar' or 'estimated_amount'
+            else:
+                # Children's Format: "standard_charge|Payer Name|Plan Name|negotiated_dollar"
+                for col in df.columns:
+                    if 'negotiated_dollar' in col or 'estimated_amount' in col:
+                        price_val = parse_price(row[col])
+                        if price_val is not None:
+                            # Parse Payer/Plan from column header
+                            # Example: standard_charge|United Healthcare|UnitedHealthcareNewBusiness|negotiated_dollar
+                            parts = col.split('|')
+                            
+                            if len(parts) >= 3:
+                                # Assuming standard_charge|PAYER|PLAN|...
+                                # Sometimes it might be: estimated_amount|PAYER|PLAN
+                                
+                                # Find index of Payer. Usually index 1.
+                                payer_name = parts[1]
+                                plan_name = parts[2] if len(parts) > 2 else None
+                                
+                                # Clean up if last part is 'negotiated_dollar' etc.
+                                if plan_name in ['negotiated_dollar', 'estimated_amount', 'negotiated_percentage']:
+                                    plan_name = None
+                                    
+                                session.add(Price(item_id=item_id, payer=payer_name, plan=plan_name, amount=price_val))
+
+            # B. Gross / Cash Prices (Common to both usually)
             # Capture location/notes from the last column to distinguish duplicates
-            # Example: "Gross Charge Type: F Fh Hosp Based Clinics Facility Charges"
             notes = row.get('additional_generic_notes')
             location_info = None
             if not pd.isna(notes):
-                # Clean up the note
                 location_info = str(notes).replace('Gross Charge Type:', '').strip()
 
             gross_str = row.get('standard_charge|gross')
@@ -151,11 +209,8 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
         session.close()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        default_path = "data/raw/beaumont.csv"
-        if os.path.exists(default_path):
-            ingest_tall_csv(default_path)
-        else:
-            print("Usage: python3 scripts/ingest_tall.py <CSV_PATH>")
+    if len(sys.argv) < 3:
+        # Fallback for testing
+        print("Usage: python3 scripts/ingest_tall.py <CSV_PATH> <HOSPITAL_ID>")
     else:
-        ingest_tall_csv(sys.argv[1])
+        ingest_tall_csv(sys.argv[1], sys.argv[2])

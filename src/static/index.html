@@ -24,6 +24,7 @@
         .hospital-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; color: white; display: inline-block; margin-bottom: 5px; }
         .hosp-uofm { background-color: #00274c; } /* Michigan Blue */
         .hosp-beaumont { background-color: #6a1b9a; } /* Purple/Generic */
+        .hosp-childrens { background-color: #e74c3c; } /* Red */
         
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
@@ -187,6 +188,7 @@
                         </div>
                         
                         <div class="card-body">
+                            ${item.definition ? `<div style="background:#f1f3f5; padding:10px; border-radius:4px; margin-bottom:10px; font-size:0.9em; color:#333;"><strong>Official Definition:</strong> ${item.definition}</div>` : ''}
                             <table>
                                 <thead>
                                     <tr>

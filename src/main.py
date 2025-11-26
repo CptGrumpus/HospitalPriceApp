@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
-from src.database import SessionLocal, Item, Price
+from src.database import SessionLocal, Item, Price, CodeDefinition
 
 app = FastAPI(title="Hospital Price API")
 
@@ -38,16 +38,26 @@ def search_items(q: str, db: Session = Depends(get_db)):
         (Item.description.ilike(search_term)) | (Item.code.ilike(search_term))
     ).limit(10000).all()
     
+    # Fetch definitions for all codes found
+    found_codes = [item.code for item in items if item.code]
+    definitions = {}
+    if found_codes:
+        defs = db.query(CodeDefinition).filter(CodeDefinition.code.in_(found_codes)).all()
+        definitions = {d.code: d.long_description for d in defs}
+
     results = []
     for item in items:
         # Filter out None prices if any
         valid_prices = [p for p in item.prices if p.amount is not None]
         
+        official_def = definitions.get(item.code, None)
+
         results.append({
             "hospital_id": item.hospital_id,
             "code": item.code,
             "code_type": item.code_type,
             "description": item.description,
+            "definition": official_def, # New Field
             "setting": item.setting,
             "prices": [
                 {
