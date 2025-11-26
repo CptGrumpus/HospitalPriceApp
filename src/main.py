@@ -47,8 +47,12 @@ def search_items(q: str, db: Session = Depends(get_db)):
 
     results = []
     for item in items:
-        # Filter out None prices if any
-        valid_prices = [p for p in item.prices if p.amount is not None]
+        # Filter out None prices if any, BUT allow prices with notes even if amount is None
+        # Logic: Show price if amount exists OR notes exist (for formulas)
+        valid_prices = [
+            p for p in item.prices 
+            if p.amount is not None or (p.notes and len(p.notes) > 0)
+        ]
         
         official_def = definitions.get(item.code, None)
 
@@ -62,8 +66,9 @@ def search_items(q: str, db: Session = Depends(get_db)):
             "prices": [
                 {
                     "payer": p.payer,
-                    "plan": p.plan,  # New field
-                    "amount": p.amount
+                    "plan": p.plan,
+                    "amount": p.amount,
+                    "notes": p.notes  # New field
                 }
                 for p in valid_prices
             ]

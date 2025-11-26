@@ -1,24 +1,41 @@
-import pandas as pd
 import sys
 import os
+
+# Add project root to python path
+sys.path.append(os.getcwd())
+
+import pandas as pd
 from sqlalchemy.orm import Session
 from src.database import SessionLocal, Item, Price, init_db
 
 def parse_price(price_str):
+    """
+    Returns tuple: (price_value, notes_str)
+    """
     if pd.isna(price_str) or price_str == '' or str(price_str).strip() == '':
-        return None
+        return None, None
+
+    price_str_clean = str(price_str).strip()
+
+    # CHECK 1: Text Formula (starts with Formula or contains alphabetical chars beyond reasonable typos)
+    # Heuristic: If it contains 'Formula', we capture it as a note.
+    if 'Formula' in price_str_clean or 'algorithm' in price_str_clean.lower():
+        return None, price_str_clean
+
     try:
         # Remove $ and , and convert to float
-        clean = str(price_str).replace('$', '').replace(',', '').strip()
+        clean = price_str_clean.replace('$', '').replace(',', '')
         val = float(clean)
         
         # FILTER: Ignore placeholder prices often found in Children's data
         if val >= 99999999:
-            return None
+            # Return None for price, but we might use this signal to look for sibling columns later
+            return None, None
             
-        return val
+        return val, None
     except:
-        return None
+        # If it fails to parse as float, treat as note string if non-empty
+        return None, price_str_clean
 
 def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
     print(f"--- Starting Tall CSV Ingestion for: {file_path} (Hospital: {hospital_id}) ---")
@@ -147,18 +164,55 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                 if pd.isna(price_str) or price_str == '':
                     price_str = row.get('estimated_amount')
                 
-                price_val = parse_price(price_str)
-                if price_val is not None:
-                    session.add(Price(item_id=item_id, payer=payer, plan=plan, amount=price_val))
+                price_val, price_note = parse_price(price_str)
+                
+                # Sibling extraction for Beaumont (Tall Format)
+                if price_val is None and (price_note is None or "Placeholder" in str(price_note)):
+                    algo_col = 'standard_charge|negotiated_algorithm'
+                    if algo_col in row and not pd.isna(row[algo_col]):
+                        algo_val = str(row[algo_col]).strip()
+                        if algo_val and algo_val != '':
+                            price_note = f"Algorithm: {algo_val}"
+                            
+                if price_val is not None or price_note is not None:
+                    session.add(Price(item_id=item_id, payer=payer, plan=plan, amount=price_val, notes=price_note))
 
             # Branch B: If columns define payers (Children's Style)
             # We scan columns for 'negotiated_dollar' or 'estimated_amount'
             else:
                 # Children's Format: "standard_charge|Payer Name|Plan Name|negotiated_dollar"
                 for col in df.columns:
-                    if 'negotiated_dollar' in col or 'estimated_amount' in col:
-                        price_val = parse_price(row[col])
-                        if price_val is not None:
+                    # Check for dollar columns OR algorithm/methodology columns
+                    is_dollar_col = 'negotiated_dollar' in col or 'estimated_amount' in col
+                    
+                    # Also check for corresponding 'negotiated_algorithm' column if price is empty?
+                    # Actually, 'negotiated_dollar' column itself sometimes contains the "Formula..." string in this dataset.
+                    
+                    if is_dollar_col:
+                        price_val, price_note = parse_price(row[col])
+                        
+                        # If we didn't get a price, maybe check the 'negotiated_algorithm' sibling column?
+                        # Sibling extraction logic:
+                        if price_val is None and (price_note is None or "Placeholder" in str(price_note)):
+                             # Construct potential sibling column names
+                             # e.g. replace 'negotiated_dollar' with 'negotiated_algorithm' or 'methodology'
+                             potential_suffixes = ['negotiated_algorithm', 'methodology', 'negotiated_percentage']
+                             base_col = col
+                             
+                             for suffix in potential_suffixes:
+                                 # Try replacing last part
+                                 parts = base_col.split('|')
+                                 if parts[-1] in ['negotiated_dollar', 'estimated_amount']:
+                                     parts[-1] = suffix
+                                     sibling_col = "|".join(parts)
+                                     
+                                     if sibling_col in row and not pd.isna(row[sibling_col]):
+                                         sibling_val = str(row[sibling_col]).strip()
+                                         if sibling_val and sibling_val != '':
+                                             price_note = f"{suffix}: {sibling_val}"
+                                             break
+                        
+                        if price_val is not None or price_note is not None:
                             # Parse Payer/Plan from column header
                             # Example: standard_charge|United Healthcare|UnitedHealthcareNewBusiness|negotiated_dollar
                             parts = col.split('|')
@@ -175,24 +229,33 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                                 if plan_name in ['negotiated_dollar', 'estimated_amount', 'negotiated_percentage']:
                                     plan_name = None
                                     
-                                session.add(Price(item_id=item_id, payer=payer_name, plan=plan_name, amount=price_val))
+                                session.add(Price(item_id=item_id, payer=payer_name, plan=plan_name, amount=price_val, notes=price_note))
 
             # B. Gross / Cash Prices (Common to both usually)
             # Capture location/notes from the last column to distinguish duplicates
-            notes = row.get('additional_generic_notes')
+            notes_col = row.get('additional_generic_notes')
             location_info = None
-            if not pd.isna(notes):
-                location_info = str(notes).replace('Gross Charge Type:', '').strip()
+            if not pd.isna(notes_col):
+                location_info = str(notes_col).replace('Gross Charge Type:', '').strip()
 
             gross_str = row.get('standard_charge|gross')
-            gross_val = parse_price(gross_str)
-            if gross_val is not None:
-                 session.add(Price(item_id=item_id, payer="GROSS", plan=location_info, amount=gross_val))
+            gross_val, gross_note = parse_price(gross_str)
+            if gross_val is not None or gross_note is not None:
+                 # Append location info to notes if present
+                 final_note = gross_note
+                 if location_info and gross_note: final_note = f"{gross_note} | {location_info}"
+                 elif location_info: final_note = location_info
+                 
+                 session.add(Price(item_id=item_id, payer="GROSS", plan=None, amount=gross_val, notes=final_note))
 
             cash_str = row.get('standard_charge|discounted_cash')
-            cash_val = parse_price(cash_str)
-            if cash_val is not None:
-                 session.add(Price(item_id=item_id, payer="DISCOUNTED_CASH", plan=location_info, amount=cash_val))
+            cash_val, cash_note = parse_price(cash_str)
+            if cash_val is not None or cash_note is not None:
+                 final_note = cash_note
+                 if location_info and cash_note: final_note = f"{cash_note} | {location_info}"
+                 elif location_info: final_note = location_info
+
+                 session.add(Price(item_id=item_id, payer="DISCOUNTED_CASH", plan=None, amount=cash_val, notes=final_note))
             
             count += 1
             if count % 1000 == 0:

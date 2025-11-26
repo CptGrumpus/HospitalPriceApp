@@ -30,6 +30,7 @@ class Price(Base):
     payer = Column(String, index=True) # e.g., "Aetna", "Cash", "Gross"
     plan = Column(String)              # e.g., "PPO", "HMO" (optional detail)
     amount = Column(Float)             # The actual price
+    notes = Column(String)             # For storing formulas or special pricing logic
 
     # Relationship back to item
     item = relationship("Item", back_populates="prices")

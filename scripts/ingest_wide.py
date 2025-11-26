@@ -1,19 +1,41 @@
 import pandas as pd
 import sys
 import os
+
+# Add project root to python path
+sys.path.append(os.getcwd())
+
 from sqlalchemy.orm import Session
 from src.database import SessionLocal, Item, Price, init_db
 
 # Helper function to parse currency
 def parse_price(price_str):
+    """
+    Returns tuple: (price_value, notes_str)
+    """
     if pd.isna(price_str) or price_str == '':
-        return None
+        return None, None
+        
+    price_str_clean = str(price_str).strip()
+    
+    # Heuristic for Formulas
+    if 'Formula' in price_str_clean or 'algorithm' in price_str_clean.lower():
+        return None, price_str_clean
+
     try:
         # Remove $ and , and convert to float
-        clean = str(price_str).replace('$', '').replace(',', '').strip()
-        return float(clean)
+        clean = price_str_clean.replace('$', '').replace(',', '')
+        val = float(clean)
+        
+        # For ingest_wide (UofM), check for placeholders if they exist (though UofM data looked cleaner)
+        # But for consistency, let's apply the same 99999999 check
+        if val >= 99999999:
+            return None, None
+            
+        return val, None
     except:
-        return None
+        # Return original string as note if parse fails
+        return None, price_str_clean
 
 def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
     print(f"--- Starting Wide CSV Ingestion for: {file_path} (Hospital: {hospital_id}) ---")
@@ -113,9 +135,28 @@ def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
             for col in df.columns:
                 # TODO: Make this filter customizable for other hospitals
                 if 'standard_charge' in col:
-                    price_val = parse_price(row[col])
+                    price_val, price_note = parse_price(row[col])
                     
-                    if price_val is not None:
+                    if price_val is None and price_note is None:
+                         # Sibling check for UofM
+                         # UofM has 'negotiated_algorithm', 'negotiated_percentage', 'methodology'
+                         potential_suffixes = ['negotiated_algorithm', 'methodology', 'negotiated_percentage']
+                         base_col = col
+                         
+                         for suffix in potential_suffixes:
+                             # Try replacing last part
+                             parts = base_col.split('|')
+                             # UofM keys usually end in 'negotiated_dollar' or similar
+                             if parts[-1] in ['negotiated_dollar', 'estimated_amount']:
+                                 parts[-1] = suffix
+                                 sibling_col = "|".join(parts)
+                                 if sibling_col in row and not pd.isna(row[sibling_col]):
+                                     sibling_val = str(row[sibling_col]).strip()
+                                     if sibling_val and sibling_val != '':
+                                         price_note = f"{suffix}: {sibling_val}"
+                                         break
+                    
+                    if price_val is not None or price_note is not None:
                         # Parse the column name to get Payer and Plan
                         # UofM Format: "standard_charge|Payer Name|Plan Name|negotiated_dollar"
                         parts = col.split('|')
@@ -137,7 +178,8 @@ def ingest_wide_csv(file_path, hospital_id="UNKNOWN"):
                             item_id=item.id,
                             payer=payer_name,
                             plan=plan_name,
-                            amount=price_val
+                            amount=price_val,
+                            notes=price_note
                         )
                         session.add(price_entry)
 

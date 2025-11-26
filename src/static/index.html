@@ -168,7 +168,12 @@
                 const prices = displayPrices.sort((a, b) => {
                     if (a.payer === 'DISCOUNTED_CASH') return -1;
                     if (b.payer === 'DISCOUNTED_CASH') return 1;
-                    return a.amount - b.amount;
+                    
+                    // Handle null amounts (sort them to bottom)
+                    const amtA = a.amount !== null ? a.amount : 999999999;
+                    const amtB = b.amount !== null ? b.amount : 999999999;
+                    
+                    return amtA - amtB;
                 });
 
                 visibleCount++;
@@ -197,12 +202,24 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${prices.length > 0 ? prices.map(p => `
+                                    ${prices.length > 0 ? prices.map(p => {
+                                        const hasPrice = p.amount !== null && p.amount !== undefined;
+                                        const priceDisplay = hasPrice ? p.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : 'Variable';
+                                        
+                                        // Note logic: show icon or inline text?
+                                        // Let's show small text under the price or payer
+                                        const noteHtml = p.notes ? `<div style="font-size:0.8em; color:#666; font-weight:normal; margin-top:2px;">📝 ${p.notes}</div>` : '';
+                                        
+                                        return `
                                         <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
-                                            <td>${p.payer} ${p.plan ? `<span style="color:#888; font-size:0.9em;">(${p.plan})</span>` : ''}</td>
-                                            <td class="price">${p.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</td>
+                                            <td>
+                                                ${p.payer} ${p.plan ? `<span style="color:#888; font-size:0.9em;">(${p.plan})</span>` : ''}
+                                                ${noteHtml}
+                                            </td>
+                                            <td class="price">${priceDisplay}</td>
                                         </tr>
-                                    `).join('') : '<tr><td colspan="2" style="text-align:center; padding:10px;">No prices match filter</td></tr>'}
+                                        `;
+                                    }).join('') : '<tr><td colspan="2" style="text-align:center; padding:10px;">No prices match filter</td></tr>'}
                                 </tbody>
                             </table>
                         </div>

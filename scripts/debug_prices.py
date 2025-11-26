@@ -27,10 +27,13 @@ def check_prices():
             print("  No prices found.")
         else:
             for p in item.prices:
-                print(f"  Payer: {p.payer}, Plan: {p.plan}, Amount: {p.amount}")
+                price_display = f"${p.amount:,.2f}" if p.amount else "N/A"
+                note_display = f" | Note: {p.notes}" if p.notes else ""
+                # Only print if it's NOT the placeholder, to see if we captured ANY formulas
+                if "Placeholder" not in str(p.notes):
+                     print(f"  Payer: {p.payer}, Plan: {p.plan}, Amount: {price_display}{note_display}")
 
     session.close()
 
 if __name__ == "__main__":
     check_prices()
-
