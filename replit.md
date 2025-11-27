@@ -112,6 +112,19 @@ The application is configured for autoscale deployment on Replit with:
 The database file (`hospital.db`) will persist between deployments since it's in the project directory.
 
 ## Recent Changes
+- **2025-11-27**: Professional frontend redesign
+  - Modern typography with Inter font
+  - Gradient header with professional styling
+  - Loading spinner animations during search
+  - Improved card styling with hover effects
+  - Result count display ("Found X procedures")
+  - Expand All / Collapse All buttons
+  - Mobile responsive design (640px breakpoint)
+  - Better table styling with cash price highlighting
+  - Professional footer with data source attribution
+  - Added sample data script (scripts/create_sample_data.py)
+  - Seeded database with ~100 realistic procedures across 4 hospitals
+
 - **2025-11-27**: Initial Replit environment setup
   - Installed Python 3.11 and all dependencies
   - Created `run.py` entry point with proper host/port configuration
