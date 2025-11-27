@@ -4,106 +4,649 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hospital Price Search</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f4f4f9; }
-        h1 { text-align: center; color: #333; }
-        .search-box { display: flex; gap: 10px; margin-bottom: 20px; }
-        input { flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
-        button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #0056b3; }
+        * {
+            box-sizing: border-box;
+        }
         
-        .result-card { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; overflow: hidden; }
-        .card-header { padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-        .card-header:hover { background-color: #f9f9f9; }
-        .header-content { flex: 1; }
-        .toggle-icon { font-size: 1.2em; color: #007bff; transition: transform 0.3s ease; margin-left: 15px; }
-        .toggle-icon.expanded { transform: rotate(90deg); }
-        
-        .card-body { display: none; padding: 0 15px 15px 15px; }
-        
-        .hospital-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; color: white; display: inline-block; margin-bottom: 5px; }
-        .hosp-uofm { background-color: #00274c; } /* Michigan Blue */
-        .hosp-beaumont { background-color: #6a1b9a; } /* Purple/Generic */
-        .hosp-childrens { background-color: #e74c3c; } /* Red */
-        .hosp-henryford { background-color: #0072ce; } /* Henry Ford Blue */
-        
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
-        th { background-color: #f8f9fa; color: #666; font-size: 0.9em; }
-        .price { text-align: right; font-weight: bold; color: #27ae60; }
-        .payer-cash { background-color: #e8f5e9; }
-        @media (max-width: 600px) {
-            .filters-box { flex-direction: column; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #f0f2f5;
+            color: #1a1a2e;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            padding: 40px 20px 50px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+            opacity: 0.5;
+        }
+
+        .header-content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .header h1 {
+            color: white;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin: 0 0 10px 0;
+            letter-spacing: -0.5px;
+        }
+
+        .header p {
+            color: rgba(255,255,255,0.8);
+            font-size: 1.1rem;
+            margin: 0;
+            font-weight: 400;
+        }
+
+        .search-container {
+            max-width: 700px;
+            margin: -30px auto 0;
+            padding: 0 20px;
+            position: relative;
+            z-index: 10;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 12px;
+            background: white;
+            padding: 8px;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+        }
+
+        .search-box input {
+            flex: 1;
+            padding: 16px 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: 10px;
+            background: #f8f9fa;
+            font-family: inherit;
+            transition: background 0.2s;
+        }
+
+        .search-box input:focus {
+            outline: none;
+            background: #f0f2f5;
+        }
+
+        .search-box input::placeholder {
+            color: #9ca3af;
+        }
+
+        .search-box button {
+            padding: 16px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .search-box button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(15, 52, 96, 0.4);
+        }
+
+        .search-box button:active {
+            transform: translateY(0);
+        }
+
+        .main-content {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 30px 20px 60px;
+        }
+
+        .filters-box {
+            display: none;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding: 16px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filters-box select,
+        .filters-box input {
+            padding: 10px 14px;
+            font-size: 14px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            font-family: inherit;
+            background: white;
+            min-width: 150px;
+        }
+
+        .filters-box select:focus,
+        .filters-box input:focus {
+            outline: none;
+            border-color: #0f3460;
+        }
+
+        .filters-box input {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .result-count {
+            font-size: 1rem;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .result-count strong {
+            color: #1a1a2e;
+        }
+
+        .expand-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .expand-btn {
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            background: white;
+            color: #0f3460;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.2s;
+        }
+
+        .expand-btn:hover {
+            background: #f8f9fa;
+            border-color: #0f3460;
+        }
+
+        .result-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            margin-bottom: 16px;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .result-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+        }
+
+        .card-header {
+            padding: 20px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+        }
+
+        .card-header:hover {
+            background-color: #fafbfc;
+        }
+
+        .card-header .header-content {
+            flex: 1;
+        }
+
+        .hospital-badge {
+            font-weight: 600;
+            padding: 5px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: white;
+            display: inline-block;
+            margin-bottom: 8px;
+            letter-spacing: 0.3px;
+        }
+
+        .hosp-uofm { background: linear-gradient(135deg, #00274c, #003366); }
+        .hosp-beaumont { background: linear-gradient(135deg, #6a1b9a, #8e24aa); }
+        .hosp-childrens { background: linear-gradient(135deg, #c62828, #e53935); }
+        .hosp-henryford { background: linear-gradient(135deg, #0072ce, #2196f3); }
+
+        .item-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #1a1a2e;
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        .setting-badge {
+            font-size: 0.75rem;
+            background: #e5e7eb;
+            padding: 3px 8px;
+            border-radius: 4px;
+            margin-left: 10px;
+            font-weight: 500;
+            color: #4b5563;
+            vertical-align: middle;
+        }
+
+        .item-code {
+            font-size: 0.9rem;
+            color: #6b7280;
+        }
+
+        .item-code span {
+            color: #9ca3af;
+        }
+
+        .toggle-icon {
+            font-size: 1.2em;
+            color: #0f3460;
+            transition: transform 0.3s ease;
+            margin-left: 15px;
+            font-weight: bold;
+        }
+
+        .toggle-icon.expanded {
+            transform: rotate(90deg);
+        }
+
+        .card-body {
+            display: none;
+            padding: 0 20px 20px 20px;
+            border-top: 1px solid #f0f2f5;
+        }
+
+        .definition-box {
+            background: linear-gradient(135deg, #f8f9fa 0%, #f0f2f5 100%);
+            padding: 14px 16px;
+            border-radius: 8px;
+            margin: 16px 0;
+            font-size: 0.9rem;
+            color: #4b5563;
+            border-left: 3px solid #0f3460;
+        }
+
+        .definition-box strong {
+            color: #1a1a2e;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 12px 16px;
+        }
+
+        th {
+            background-color: #f8f9fa;
+            color: #6b7280;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        td {
+            border-bottom: 1px solid #f0f2f5;
+            font-size: 0.95rem;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .price {
+            text-align: right;
+            font-weight: 700;
+            color: #059669;
+            font-size: 1rem;
+        }
+
+        .payer-cash {
+            background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+        }
+
+        .payer-cash td:first-child::before {
+            content: '💵 ';
+        }
+
+        .payer-name {
+            font-weight: 500;
+            color: #1a1a2e;
+        }
+
+        .plan-name {
+            color: #9ca3af;
+            font-size: 0.85rem;
+            margin-left: 4px;
+        }
+
+        .price-note {
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .loading-container {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 48px;
+            height: 48px;
+            border: 4px solid #e5e7eb;
+            border-top-color: #0f3460;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            margin-top: 16px;
+            color: #6b7280;
+            font-size: 1rem;
+        }
+
+        .skeleton {
+            background: linear-gradient(90deg, #f0f2f5 25%, #e5e7eb 50%, #f0f2f5 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 8px;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .skeleton-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .skeleton-badge {
+            width: 80px;
+            height: 24px;
+            margin-bottom: 12px;
+        }
+
+        .skeleton-title {
+            width: 70%;
+            height: 20px;
+            margin-bottom: 8px;
+        }
+
+        .skeleton-code {
+            width: 40%;
+            height: 16px;
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b7280;
+        }
+
+        .no-results-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 30px 20px;
+            color: #9ca3af;
+            font-size: 0.85rem;
+            border-top: 1px solid #e5e7eb;
+            background: white;
+            margin-top: auto;
+        }
+
+        .footer a {
+            color: #0f3460;
+            text-decoration: none;
+        }
+
+        @media (max-width: 640px) {
+            .header h1 {
+                font-size: 1.8rem;
+            }
+
+            .header p {
+                font-size: 0.95rem;
+            }
+
+            .search-box {
+                flex-direction: column;
+                padding: 12px;
+            }
+
+            .search-box button {
+                width: 100%;
+            }
+
+            .filters-box {
+                flex-direction: column;
+            }
+
+            .filters-box select,
+            .filters-box input {
+                width: 100%;
+            }
+
+            .results-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .item-title {
+                font-size: 1rem;
+            }
+
+            .setting-badge {
+                display: block;
+                margin: 8px 0 0 0;
+                width: fit-content;
+            }
+
+            table {
+                display: block;
+                overflow-x: auto;
+            }
+
+            th, td {
+                padding: 10px 12px;
+                white-space: nowrap;
+            }
+
+            .card-header {
+                padding: 16px;
+            }
+
+            .card-body {
+                padding: 0 16px 16px;
+            }
         }
     </style>
 </head>
 <body>
 
-    <h1>🏥 Hospital Price Search</h1>
-    
-    <div class="search-box">
-        <input type="text" id="searchInput" placeholder="Search for a procedure (e.g. MRI, X-Ray, Abutment)..." onkeypress="handleEnter(event)">
-        <button onclick="search()">Search</button>
+    <header class="header">
+        <div class="header-content">
+            <h1>Hospital Price Search</h1>
+            <p>Compare medical procedure costs across hospitals and insurance plans</p>
+        </div>
+    </header>
+
+    <div class="search-container">
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Search for a procedure (e.g., MRI, X-Ray, Colonoscopy...)" onkeypress="handleEnter(event)">
+            <button onclick="search()">Search</button>
+        </div>
     </div>
 
-    <div class="filters-box" style="display:none; gap: 10px; margin-bottom: 20px; padding: 10px; background: #e9ecef; border-radius: 4px;">
-        <select id="hospitalFilter" onchange="applyFilters()">
-            <option value="">All Hospitals</option>
-        </select>
-        <select id="settingFilter" onchange="applyFilters()">
-            <option value="">All Settings</option>
-        </select>
-        <input type="text" id="textFilter" placeholder="Filter by Payer, Code, or Description..." oninput="applyFilters()" style="padding: 8px;">
-    </div>
+    <main class="main-content">
+        <div class="filters-box" id="filtersBox">
+            <select id="hospitalFilter" onchange="applyFilters()">
+                <option value="">All Hospitals</option>
+            </select>
+            <select id="settingFilter" onchange="applyFilters()">
+                <option value="">All Settings</option>
+            </select>
+            <input type="text" id="textFilter" placeholder="Filter by payer, code, or description..." oninput="applyFilters()">
+        </div>
 
-    <div id="results"></div>
+        <div id="resultsHeader" class="results-header" style="display: none;">
+            <div class="result-count" id="resultCount"></div>
+            <div class="expand-controls">
+                <button class="expand-btn" onclick="expandAll()">Expand All</button>
+                <button class="expand-btn" onclick="collapseAll()">Collapse All</button>
+            </div>
+        </div>
+
+        <div id="results"></div>
+    </main>
+
+    <footer class="footer">
+        <p>Data sourced from CMS Hospital Price Transparency files. Prices shown are estimates and may vary.</p>
+    </footer>
 
     <script>
         let allData = [];
+        let filteredCount = 0;
 
         async function search() {
             const query = document.getElementById('searchInput').value;
             if (!query) return;
 
             const resultsDiv = document.getElementById('results');
-            const filtersBox = document.querySelector('.filters-box');
-            resultsDiv.innerHTML = '<p style="text-align:center; color:#666;">Searching...</p>';
+            const filtersBox = document.getElementById('filtersBox');
+            const resultsHeader = document.getElementById('resultsHeader');
+            
             filtersBox.style.display = 'none';
+            resultsHeader.style.display = 'none';
+            
+            resultsDiv.innerHTML = `
+                <div class="loading-container">
+                    <div class="loading-spinner"></div>
+                    <div class="loading-text">Searching procedures...</div>
+                </div>
+            `;
 
             try {
                 const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
                 const data = await response.json();
                 
-                allData = data.results; // Store global data
+                allData = data.results;
 
                 if (data.count === 0) {
-                    resultsDiv.innerHTML = '<p style="text-align:center;">No results found.</p>';
+                    resultsDiv.innerHTML = `
+                        <div class="no-results">
+                            <div class="no-results-icon">🔍</div>
+                            <p>No results found for "${query}"</p>
+                            <p style="font-size: 0.9rem;">Try a different search term or check your spelling.</p>
+                        </div>
+                    `;
                     return;
                 }
                 
                 populateFilters(allData);
                 filtersBox.style.display = 'flex';
+                resultsHeader.style.display = 'flex';
                 renderResults(allData);
 
             } catch (err) {
-                resultsDiv.innerHTML = '<p style="text-align:center; color:red;">Error fetching results.</p>';
+                resultsDiv.innerHTML = `
+                    <div class="no-results">
+                        <div class="no-results-icon">⚠️</div>
+                        <p>Error fetching results</p>
+                        <p style="font-size: 0.9rem;">Please try again later.</p>
+                    </div>
+                `;
                 console.error(err);
             }
         }
 
         function populateFilters(results) {
-            // Get unique hospitals and settings
             const hospitals = [...new Set(results.map(r => r.hospital_id))].sort();
             const settings = [...new Set(results.map(r => r.setting || 'Unknown'))].sort();
             
             const hospSelect = document.getElementById('hospitalFilter');
             const settSelect = document.getElementById('settingFilter');
             
+            const hospitalNames = {
+                'UOFM': 'University of Michigan',
+                'BEAUMONT': 'Beaumont Health',
+                'CHILDRENS': "Children's Hospital",
+                'HENRYFORD': 'Henry Ford Health'
+            };
+            
             hospSelect.innerHTML = '<option value="">All Hospitals</option>' + 
-                hospitals.map(h => `<option value="${h}">${h}</option>`).join('');
+                hospitals.map(h => `<option value="${h}">${hospitalNames[h] || h}</option>`).join('');
                 
             settSelect.innerHTML = '<option value="">All Settings</option>' + 
-                settings.map(s => `<option value="${s}">${s}</option>`).join('');
+                settings.map(s => `<option value="${s}">${formatSetting(s)}</option>`).join('');
+        }
+
+        function formatSetting(setting) {
+            if (!setting) return 'Unknown';
+            if (setting.toLowerCase() === 'both') return 'Inpatient/Outpatient';
+            if (setting.toLowerCase() === 'facility') return 'Facility';
+            return setting.charAt(0).toUpperCase() + setting.slice(1);
         }
 
         function applyFilters() {
@@ -114,66 +657,53 @@
             renderResults(allData, hospValue, settValue, textValue);
         }
 
+        function updateResultCount(count, total) {
+            const countEl = document.getElementById('resultCount');
+            if (count === total) {
+                countEl.innerHTML = `Found <strong>${count}</strong> procedure${count !== 1 ? 's' : ''}`;
+            } else {
+                countEl.innerHTML = `Showing <strong>${count}</strong> of ${total} procedure${total !== 1 ? 's' : ''}`;
+            }
+            filteredCount = count;
+        }
+
         function renderResults(data, hospitalFilter = "", settingFilter = "", textFilter = "") {
             const resultsDiv = document.getElementById('results');
             let html = '';
             let visibleCount = 0;
 
             data.forEach(item => {
-                // 1. Filter by Hospital
                 if (hospitalFilter && item.hospital_id !== hospitalFilter) return;
 
-                // 2. Filter by Setting
                 const itemSetting = item.setting || 'Unknown';
                 if (settingFilter && itemSetting !== settingFilter) return;
 
-                // 3. Smart Filter Logic
-                // Matches if text matches Code OR Description OR any Payer
                 const codeMatch = (item.code || '').toLowerCase().includes(textFilter);
                 const descMatch = (item.description || '').toLowerCase().includes(textFilter);
-                
-                // Filter prices based on text match if it's NOT a code/desc match
-                // If it IS a code/desc match, show all prices.
-                // If it is NOT, only show prices that match the payer name.
                 
                 let displayPrices = item.prices;
                 
                 if (textFilter) {
-                    // Check if any payer matches
                     const payerMatches = item.prices.filter(p => 
                         (p.payer + " " + (p.plan || "")).toLowerCase().includes(textFilter)
                     );
 
                     if (codeMatch || descMatch) {
-                        // If the code or description matches, we show the card.
-                        // We still might want to highlight or filter payers, but typically
-                        // if I search for a code, I want to see all prices for that code.
-                        // Let's keep all prices visible if the top-level item matches.
                         displayPrices = item.prices;
                     } else if (payerMatches.length > 0) {
-                        // If top-level didn't match, but some payers did, show only those payers.
                         displayPrices = payerMatches;
                     } else {
-                        // Nothing matches
                         return; 
                     }
                 }
 
-                // Format setting display
-                let settingDisplay = itemSetting;
-                if (settingDisplay.toLowerCase() === 'both') settingDisplay = 'Inpatient/Outpatient';
-                else if (settingDisplay.toLowerCase() === 'facility') settingDisplay = 'Facility';
-                else settingDisplay = settingDisplay.charAt(0).toUpperCase() + settingDisplay.slice(1);
+                const settingDisplay = formatSetting(itemSetting);
                 
-                // Sort prices
                 const prices = displayPrices.sort((a, b) => {
                     if (a.payer === 'DISCOUNTED_CASH') return -1;
                     if (b.payer === 'DISCOUNTED_CASH') return 1;
-                    
-                    // Handle null amounts (sort them to bottom)
                     const amtA = a.amount !== null ? a.amount : 999999999;
                     const amtB = b.amount !== null ? b.amount : 999999999;
-                    
                     return amtA - amtB;
                 });
 
@@ -185,16 +715,16 @@
                             <div class="header-content">
                                 <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
                                 <div class="item-title">
-                                    ${item.description} 
-                                    <span style="font-size:0.8em; background:#e0e0e0; padding:2px 6px; border-radius:4px; margin-left:10px; font-weight:normal;">${settingDisplay}</span>
+                                    ${item.description}
+                                    <span class="setting-badge">${settingDisplay}</span>
                                 </div>
-                                <div class="item-code">Code: ${item.code} <span style="color:#999">(${item.code_type || 'N/A'})</span></div>
+                                <div class="item-code">Code: ${item.code} <span>(${item.code_type || 'N/A'})</span></div>
                             </div>
-                            <div class="toggle-icon">&gt;</div>
+                            <div class="toggle-icon">›</div>
                         </div>
                         
                         <div class="card-body">
-                            ${item.definition ? `<div style="background:#f1f3f5; padding:10px; border-radius:4px; margin-bottom:10px; font-size:0.9em; color:#333;"><strong>Official Definition:</strong> ${item.definition}</div>` : ''}
+                            ${item.definition ? `<div class="definition-box"><strong>Official Definition:</strong> ${item.definition}</div>` : ''}
                             <table>
                                 <thead>
                                     <tr>
@@ -206,21 +736,20 @@
                                     ${prices.length > 0 ? prices.map(p => {
                                         const hasPrice = p.amount !== null && p.amount !== undefined;
                                         const priceDisplay = hasPrice ? p.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : 'Variable';
-                                        
-                                        // Note logic: show icon or inline text?
-                                        // Let's show small text under the price or payer
-                                        const noteHtml = p.notes ? `<div style="font-size:0.8em; color:#666; font-weight:normal; margin-top:2px;">📝 ${p.notes}</div>` : '';
+                                        const noteHtml = p.notes ? `<div class="price-note">📝 ${p.notes}</div>` : '';
+                                        const payerDisplay = p.payer === 'DISCOUNTED_CASH' ? 'Cash Price' : p.payer;
                                         
                                         return `
                                         <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
                                             <td>
-                                                ${p.payer} ${p.plan ? `<span style="color:#888; font-size:0.9em;">(${p.plan})</span>` : ''}
+                                                <span class="payer-name">${payerDisplay}</span>
+                                                ${p.plan ? `<span class="plan-name">(${p.plan})</span>` : ''}
                                                 ${noteHtml}
                                             </td>
                                             <td class="price">${priceDisplay}</td>
                                         </tr>
                                         `;
-                                    }).join('') : '<tr><td colspan="2" style="text-align:center; padding:10px;">No prices match filter</td></tr>'}
+                                    }).join('') : '<tr><td colspan="2" style="text-align:center; padding:20px; color:#6b7280;">No prices match filter</td></tr>'}
                                 </tbody>
                             </table>
                         </div>
@@ -228,8 +757,16 @@
                 `;
             });
             
+            updateResultCount(visibleCount, allData.length);
+            
             if (visibleCount === 0) {
-                resultsDiv.innerHTML = '<p style="text-align:center;">No results match your filters.</p>';
+                resultsDiv.innerHTML = `
+                    <div class="no-results">
+                        <div class="no-results-icon">🔍</div>
+                        <p>No results match your filters</p>
+                        <p style="font-size: 0.9rem;">Try adjusting your filter criteria.</p>
+                    </div>
+                `;
             } else {
                 resultsDiv.innerHTML = html;
             }
@@ -251,8 +788,25 @@
                 icon.classList.add('expanded');
             }
         }
+
+        function expandAll() {
+            document.querySelectorAll('.card-body').forEach(body => {
+                body.style.display = 'block';
+            });
+            document.querySelectorAll('.toggle-icon').forEach(icon => {
+                icon.classList.add('expanded');
+            });
+        }
+
+        function collapseAll() {
+            document.querySelectorAll('.card-body').forEach(body => {
+                body.style.display = 'none';
+            });
+            document.querySelectorAll('.toggle-icon').forEach(icon => {
+                icon.classList.remove('expanded');
+            });
+        }
     </script>
 
 </body>
 </html>
-
