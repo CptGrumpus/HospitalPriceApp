@@ -67,6 +67,10 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
         # Key: (code, description, setting) -> item_id
         item_cache = {}
         
+        # Cache to avoid duplicate Gross/Cash prices for the same item
+        # Key: (item_id, price_type, amount, notes)
+        price_dedupe_cache = set()
+        
         count = 0
         
         for index, row in df.iterrows():
@@ -246,7 +250,11 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                  if location_info and gross_note: final_note = f"{gross_note} | {location_info}"
                  elif location_info: final_note = location_info
                  
-                 session.add(Price(item_id=item_id, payer="GROSS", plan=None, amount=gross_val, notes=final_note))
+                 # Deduplication Check
+                 dedupe_key = (item_id, 'GROSS', gross_val, final_note)
+                 if dedupe_key not in price_dedupe_cache:
+                     session.add(Price(item_id=item_id, payer="GROSS", plan=None, amount=gross_val, notes=final_note))
+                     price_dedupe_cache.add(dedupe_key)
 
             cash_str = row.get('standard_charge|discounted_cash')
             cash_val, cash_note = parse_price(cash_str)
@@ -255,7 +263,11 @@ def ingest_tall_csv(file_path, hospital_id="BEAUMONT"):
                  if location_info and cash_note: final_note = f"{cash_note} | {location_info}"
                  elif location_info: final_note = location_info
 
-                 session.add(Price(item_id=item_id, payer="DISCOUNTED_CASH", plan=None, amount=cash_val, notes=final_note))
+                 # Deduplication Check
+                 dedupe_key = (item_id, 'DISCOUNTED_CASH', cash_val, final_note)
+                 if dedupe_key not in price_dedupe_cache:
+                     session.add(Price(item_id=item_id, payer="DISCOUNTED_CASH", plan=None, amount=cash_val, notes=final_note))
+                     price_dedupe_cache.add(dedupe_key)
             
             count += 1
             if count % 1000 == 0:
