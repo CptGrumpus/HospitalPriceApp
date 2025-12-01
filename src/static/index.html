@@ -699,6 +699,10 @@
 
                 const settingDisplay = formatSetting(itemSetting);
                 
+                // AI ENHANCEMENT: Use generated title if available
+                const displayTitle = item.ai_title || item.description;
+                const displayDescription = item.ai_description || item.official_definition;
+                
                 const prices = displayPrices.sort((a, b) => {
                     if (a.payer === 'DISCOUNTED_CASH') return -1;
                     if (b.payer === 'DISCOUNTED_CASH') return 1;
@@ -715,7 +719,7 @@
                             <div class="header-content">
                                 <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
                                 <div class="item-title">
-                                    ${item.description}
+                                    ${displayTitle}
                                     <span class="setting-badge">${settingDisplay}</span>
                                 </div>
                                 <div class="item-code">Code: ${item.code} <span>(${item.code_type || 'N/A'})</span></div>
@@ -724,7 +728,7 @@
                         </div>
                         
                         <div class="card-body">
-                            ${item.definition ? `<div class="definition-box"><strong>Official Definition:</strong> ${item.definition}</div>` : ''}
+                            ${displayDescription ? `<div class="definition-box"><strong>Procedure Info:</strong> ${displayDescription}</div>` : ''}
                             <table>
                                 <thead>
                                     <tr>

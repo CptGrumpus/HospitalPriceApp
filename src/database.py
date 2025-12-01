@@ -41,6 +41,9 @@ class CodeDefinition(Base):
     code = Column(String, primary_key=True, index=True)
     long_description = Column(String)
     short_description = Column(String)
+    generated_title = Column(String)
+    generated_description = Column(String)
+    category = Column(String)
 
 def init_db():
     """Creates the tables in the database if they don't exist."""

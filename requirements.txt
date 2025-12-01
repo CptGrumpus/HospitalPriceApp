@@ -3,3 +3,5 @@ pandas
 sqlalchemy
 fastapi
 uvicorn
+sentence-transformers
+ollama
