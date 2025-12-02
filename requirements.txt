@@ -5,3 +5,4 @@ fastapi
 uvicorn
 sentence-transformers
 ollama
+playwright
