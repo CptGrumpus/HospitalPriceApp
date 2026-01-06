@@ -23,14 +23,14 @@
         }
         .header h1 { margin: 0 0 10px 0; font-size: 2.5rem; }
         .header p { margin: 0; opacity: 0.8; }
-        
+
         .search-container { max-width: 700px; margin: -30px auto 0; padding: 0 20px; position: relative; z-index: 10; }
         .search-box { display: flex; gap: 12px; background: white; padding: 8px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.12); }
         .search-box input { flex: 1; padding: 16px 20px; font-size: 16px; border: none; background: #f8f9fa; border-radius: 10px; }
         .search-box button { padding: 16px 32px; background: #0f3460; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; }
-        
+
         .main-content { max-width: 900px; margin: 0 auto; padding: 30px 20px 60px; }
-        
+
         .filters-box {
             display: none; gap: 12px; margin-bottom: 20px; padding: 16px;
             background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);
@@ -41,34 +41,34 @@
             border-radius: 8px; background: white; min-width: 150px;
         }
         .filters-box input { flex: 1; min-width: 200px; }
-        
+
         .results-header { display: none; justify-content: space-between; margin-bottom: 16px; color: #6b7280; font-weight: 500; }
-        
+
         .result-card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 16px; overflow: hidden; }
         .card-header { padding: 20px; display: flex; justify-content: space-between; align-items: flex-start; cursor: pointer; }
         .card-header:hover { background-color: #fafbfc; }
-        
+
         .hospital-badge { font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; color: white; background: #6b7280; margin-bottom: 8px; display: inline-block; }
         .hosp-uofm { background: #00274c; } .hosp-beaumont { background: #6a1b9a; }
         .hosp-childrens { background: #c62828; } .hosp-henryford { background: #0072ce; }
-        
+
         .item-title { font-size: 1.1rem; font-weight: 600; color: #1a1a2e; margin-bottom: 4px; }
         .item-code { font-size: 0.85rem; color: #6b7280; }
         
         .price-summary { text-align: right; min-width: 150px; }
         .price-range { font-size: 1.2rem; font-weight: 700; color: #059669; }
         .price-label { font-size: 0.75rem; color: #6b7280; margin-top: 2px; }
-        
+
         .distribution-bar {
             height: 6px; background: #e5e7eb; border-radius: 3px; margin-top: 8px; position: relative; overflow: hidden;
         }
         .distribution-fill {
             height: 100%; background: linear-gradient(90deg, #34d399, #059669); border-radius: 3px;
         }
-        
+
         .card-body { display: none; padding: 0 20px 20px; border-top: 1px solid #f0f2f5; }
         .definition-box { background: #f8f9fa; padding: 12px; border-radius: 8px; margin: 16px 0; font-size: 0.9rem; border-left: 3px solid #0f3460; }
-        
+
         table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.9rem; }
         th { text-align: left; padding: 10px; background: #f8f9fa; color: #6b7280; font-size: 0.8rem; }
         td { padding: 10px; border-bottom: 1px solid #f0f2f5; }
@@ -78,7 +78,7 @@
         /* Highlight for Cash Prices */
         .payer-cash { background: #ecfdf5; }
         .payer-cash td:first-child::before { content: '💵 '; }
-        
+
         .expand-hint { text-align: center; padding: 8px; color: #0f3460; font-size: 0.8rem; font-weight: 500; cursor: pointer; background: #f8f9fa; border-top: 1px solid #e5e7eb; }
         .expand-hint:hover { background: #f0f2f5; }
 
@@ -110,7 +110,7 @@
             </select>
             <input type="text" id="textFilter" placeholder="Filter by payer, code, or description..." oninput="applyFilters()">
         </div>
-        
+
         <div id="resultsHeader" class="results-header">
             <span id="resultCount"></span>
         </div>
@@ -124,7 +124,7 @@
         async function search() {
             const query = document.getElementById('searchInput').value;
             if (!query) return;
-            
+
             const resultsDiv = document.getElementById('results');
             const filtersBox = document.getElementById('filtersBox');
             const resultsHeader = document.getElementById('resultsHeader');
@@ -132,11 +132,11 @@
             filtersBox.style.display = 'none';
             resultsHeader.style.display = 'none';
             resultsDiv.innerHTML = '<div style="text-align:center; padding:40px; color:#6b7280;">Searching...</div>';
-            
+
             try {
                 const res = await fetch(`/search?q=${encodeURIComponent(query)}`);
                 const data = await res.json();
-                
+
                 if (data.count === 0) {
                     resultsDiv.innerHTML = '<div style="text-align:center; padding:40px;">No results found.</div>';
                     return;
@@ -147,7 +147,7 @@
                 filtersBox.style.display = 'flex';
                 resultsHeader.style.display = 'flex';
                 renderResults(allData);
-                
+
             } catch (e) {
                 resultsDiv.innerHTML = '<div style="text-align:center; color:red;">Error searching.</div>';
             }
@@ -171,7 +171,7 @@
             const hospValue = document.getElementById('hospitalFilter').value;
             const settValue = document.getElementById('settingFilter').value;
             const textValue = document.getElementById('textFilter').value.toLowerCase();
-            
+
             const filtered = allData.filter(item => {
                 if (hospValue && item.hospital_id !== hospValue) return false;
                 if (settValue && (item.setting || 'Unknown') !== settValue) return false;
@@ -204,14 +204,14 @@
             const minFmt = formatPrice(stats.min);
             const maxFmt = formatPrice(stats.max);
             const medFmt = formatPrice(stats.median);
-            
+
             const title = item.ai_title || item.description;
             const desc = item.ai_description || item.official_definition || "";
-            
+                
             let priceDisplay = "";
             if (stats.count > 1 && stats.min !== stats.max) {
                 priceDisplay = `${minFmt} — ${maxFmt}`;
-            } else {
+                    } else {
                 priceDisplay = minFmt;
             }
 
@@ -224,16 +224,16 @@
                 
                 // 2. Sort by Price (Ascending)
                 return a.amount - b.amount;
-            });
+                });
 
             return `
-                <div class="result-card">
+                    <div class="result-card">
                     <div class="card-header" onclick="toggleBody(this)">
                         <div style="flex:1;">
-                            <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
+                                <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
                             <div class="item-title">${title}</div>
                             <div class="item-code">Code: ${item.code}</div>
-                        </div>
+                                </div>
                         <div class="price-summary">
                             <div class="price-range">${priceDisplay}</div>
                             <div class="price-label">${stats.count} options • Median: ${medFmt}</div>
@@ -246,33 +246,33 @@
                     <div class="card-body">
                         ${desc ? `<div class="definition-box"><strong>About:</strong> ${desc}</div>` : ''}
                         
-                        <table>
+                            <table>
                             <thead><tr><th>Payer / Plan</th><th style="text-align:right">Price</th></tr></thead>
-                            <tbody>
+                                <tbody>
                                 ${sortedPrices.map(p => `
-                                    <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
-                                        <td>
+                                        <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
+                                            <td>
                                             <div>${p.payer} ${p.plan ? `(${p.plan})` : ''}</div>
                                             ${p.notes ? `<span class="note-text">📝 ${p.notes}</span>` : ''}
-                                        </td>
+                                            </td>
                                         <td class="price-col">${p.amount !== null ? formatPrice(p.amount) : 'Variable'}</td>
-                                    </tr>
+                                        </tr>
                                 `).join('')}
-                            </tbody>
-                        </table>
+                                </tbody>
+                            </table>
                     </div>
                     <div class="expand-hint" onclick="toggleBody(this.parentElement.querySelector('.card-header'))">
                         View ${stats.count} Price Options ▾
                     </div>
-                </div>
-            `;
+                    </div>
+                `;
         }
 
         function formatPrice(val) {
             if (val === null || val === undefined || val === 0) return 'Variable';
             return val.toLocaleString('en-US', {style:'currency', currency:'USD'});
         }
-        
+
         function formatSetting(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown'; }
 
         function toggleBody(header) {

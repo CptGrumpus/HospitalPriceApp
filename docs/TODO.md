@@ -120,11 +120,66 @@ Come back to fix these later.
 
 ## Future Improvements
 
+### Download Improvements
 - [ ] Add retry logic with exponential backoff
 - [ ] Add Playwright fallback for 403 errors
 - [ ] Add SSL verification bypass option (with warning)
 - [ ] Create a "hospital URL updater" utility script
 - [ ] Set up scheduled re-scraping of hospitalpricingfiles.org for new URLs
+
+### Preview Cards Enhancements (Future Ideas)
+The following enhancements were discussed but not yet implemented. They can improve validation accuracy but may increase processing time:
+
+#### Phase 2 Enhancements (More Comprehensive)
+- [ ] **Price Range Statistics**: For each code, show min/max/median prices across all payers
+  - Display price distribution (histogram or quartiles)
+  - Show GROSS vs CASH vs negotiated comparison
+  - Example: "Price range: $242.66 - $373.32 (median: $335.99)"
+
+- [ ] **Code-Payer Matrix View**: For a sample code, show a table of all payers and their prices
+  - Makes payer diversity immediately clear
+  - Shows price variation across payers
+  - Format: Table with Payer | Price | Plan columns
+
+- [ ] **Extraction Success Metrics**: Per-row extraction status indicators
+  - Show ✅/❌ for each field (code, price, description, setting)
+  - Overall success rate: "98% of rows successfully extract all fields"
+  - Helps identify systematic extraction issues
+
+#### Phase 3 Enhancements (Advanced)
+- [ ] **Edge Case Detection**: Flag potential problematic rows
+  - Rows with placeholder prices (99999999)
+  - Rows with formula/algorithm prices
+  - Codes with unusually high/low prices
+  - Duplicate rows (same code+payer+price)
+  - Missing critical fields
+
+- [ ] **Data Quality Indicators**: Fill rate per column
+  - Show percentage of non-null values per column
+  - Highlight columns with low fill rates (< 80%)
+  - Example: "Code columns: 95% filled, Description: 98% filled, Prices: 87% filled"
+
+- [ ] **Ingestion Preview**: Estimated ingestion statistics
+  - "Will create ~18,640 unique items"
+  - "Will create ~484,580 price entries"
+  - "Will cover 26 payers"
+  - Helps validate scale expectations before ingestion
+
+- [ ] **Warning System**: Color-coded warnings for data quality
+  - 🟢 Green: All good
+  - 🟡 Yellow: Minor issues (e.g., 5% missing descriptions)
+  - 🔴 Red: Major issues (e.g., 30% missing codes)
+  - Summary of warnings at the top of each card
+
+- [ ] **Sample Size Control**: Configurable sampling options
+  - "Sample 50 rows" vs "Sample 500 rows" toggle
+  - "Sample across all payers" vs "Sample first N rows" option
+  - Trade-off: more data = longer processing time
+
+- [ ] **Comparison View**: Show same code across different contexts
+  - Different payers (price variation)
+  - Different settings (inpatient vs outpatient)
+  - Different code types (if multiple codes per row)
 
 ---
 

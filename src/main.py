@@ -67,14 +67,14 @@ def search_items(q: str, db: Session = Depends(get_db)):
                     ai_desc = def_obj.generated_description
 
             merged_map[group_key] = {
-                "hospital_id": item.hospital_id,
-                "code": item.code,
-                "code_type": item.code_type,
-                "description": item.description,
+            "hospital_id": item.hospital_id,
+            "code": item.code,
+            "code_type": item.code_type,
+            "description": item.description,
                 "ai_title": ai_title,
                 "ai_description": ai_desc,
                 "official_definition": official_desc,
-                "setting": item.setting,
+            "setting": item.setting,
                 "prices": [],
                 "stats": None
             }
@@ -104,9 +104,9 @@ def search_items(q: str, db: Session = Depends(get_db)):
                      final_notes = item.description
 
             merged_map[group_key]["prices"].append({
-                "payer": p.payer,
-                "plan": p.plan,
-                "amount": p.amount,
+                    "payer": p.payer,
+                    "plan": p.plan,
+                    "amount": p.amount,
                 "notes": final_notes
             })
 

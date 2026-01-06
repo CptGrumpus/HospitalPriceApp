@@ -108,10 +108,11 @@ def parse_price(price_str, skip_rules=None):
         return None, price_str_clean if price_str_clean else None
 
 
-def extract_code(row, config):
+def extract_code(row, config, is_json=False):
     """
     Extract the best code from a row using the config's code_extraction rules.
     Returns (code, code_type).
+    Handles both CSV (pandas Series) and JSON (dict) formats.
     """
     code_ext = config.get('code_extraction', {})
     columns = code_ext.get('columns', [])
@@ -127,8 +128,17 @@ def extract_code(row, config):
     if not columns:
         code_col = config.get('code_column', 'code|1')
         type_col = config.get('code_type_column')
-        code = row.get(code_col, 'UNKNOWN')
-        code_type = row.get(type_col, 'UNKNOWN') if type_col else 'UNKNOWN'
+        
+        code_val = row.get(code_col) if code_col in row else None
+        
+        # For JSON, code might be nested
+        if is_json and code_val is not None:
+            code, code_type = extract_code_from_value(code_val)
+            if code:
+                return code, code_type or 'UNKNOWN'
+        
+        code = code_val if code_val else 'UNKNOWN'
+        code_type = row.get(type_col, 'UNKNOWN') if type_col and type_col in row else 'UNKNOWN'
         return str(code).strip() if code else 'UNKNOWN', code_type
     
     # Find best code by priority
@@ -140,18 +150,29 @@ def extract_code(row, config):
         if col not in row:
             continue
         
-        code = row.get(col)
-        if pd.isna(code) or str(code).strip() == '':
+        code_val = row.get(col)
+        if pd.isna(code_val) or (isinstance(code_val, str) and code_val.strip() == ''):
             continue
         
-        code = str(code).strip()
+        # For JSON, code might be nested
+        if is_json:
+            code, code_type = extract_code_from_value(code_val)
+            if not code:
+                code = str(code_val).strip() if code_val else None
+        else:
+            code = str(code_val).strip()
+            code_type = None
         
-        # Get type from corresponding type column
-        code_type = 'UNKNOWN'
-        if type_columns and i < len(type_columns):
+        if not code or code == 'nan':
+            continue
+        
+        # Get type from corresponding type column if not extracted
+        if not code_type and type_columns and i < len(type_columns):
             type_col = type_columns[i]
             if type_col and type_col in row:
                 code_type = str(row.get(type_col, 'UNKNOWN')).strip()
+        
+        code_type = code_type or 'UNKNOWN'
         
         # Validate CPT/HCPCS codes (must be 5 chars)
         if code_type in ['CPT', 'HCPCS']:
@@ -175,7 +196,69 @@ def extract_code(row, config):
     return best_code, best_type
 
 
-def extract_setting(row, config):
+def parse_json_value(val):
+    """
+    Try to parse a value that might be JSON (string or already parsed).
+    Returns the parsed value or original value.
+    """
+    if pd.isna(val):
+        return None
+    
+    # If it's already a dict/list, return as-is
+    if isinstance(val, (dict, list)):
+        return val
+    
+    # Try to parse as JSON string
+    val_str = str(val).strip()
+    if not val_str or val_str == 'nan':
+        return None
+    
+    # Check if it looks like JSON
+    if val_str.startswith('[') or val_str.startswith('{'):
+        try:
+            return json.loads(val_str)
+        except:
+            pass
+    
+    return val
+
+
+def extract_code_from_value(val):
+    """
+    Extract a code from a value that might be:
+    - A simple string/number
+    - A JSON object with 'code' key
+    - A JSON array with objects containing 'code'
+    """
+    parsed = parse_json_value(val)
+    
+    if parsed is None:
+        return None, None
+    
+    # If it's a dict, look for 'code' key
+    if isinstance(parsed, dict):
+        code = parsed.get('code') or parsed.get('code_value') or parsed.get('procedure_code')
+        code_type = parsed.get('code_type') or parsed.get('type') or parsed.get('codeType')
+        if code:
+            return str(code).strip(), str(code_type).strip() if code_type else None
+    
+    # If it's a list, try first element
+    if isinstance(parsed, list) and len(parsed) > 0:
+        first = parsed[0]
+        if isinstance(first, dict):
+            code = first.get('code') or first.get('code_value') or first.get('procedure_code')
+            code_type = first.get('code_type') or first.get('type') or first.get('codeType')
+            if code:
+                return str(code).strip(), str(code_type).strip() if code_type else None
+    
+    # If it's a simple string/number, return as-is
+    if isinstance(parsed, (str, int, float)):
+        return str(parsed).strip(), None
+    
+    return None, None
+
+
+def extract_setting(row, config, is_json=False):
     """Extract the setting (inpatient/outpatient) from a row."""
     setting_ext = config.get('setting_extraction', {})
     
@@ -183,24 +266,68 @@ def extract_setting(row, config):
     fallback = setting_ext.get('fallback', 'billing_class')
     default = setting_ext.get('default', 'UNKNOWN')
     
-    # Try primary column
-    if primary and primary in row:
-        val = row.get(primary)
-        if not pd.isna(val) and str(val).strip():
-            return str(val).strip()
-    
-    # Try fallback
-    if fallback and fallback in row:
-        val = row.get(fallback)
-        if not pd.isna(val) and str(val).strip():
-            return str(val).strip()
+    # Handle JSON format - setting might be nested in standard_charges
+    if is_json:
+        # First try top-level
+        if primary:
+            val = row.get(primary)
+            if val is not None and str(val).strip() and str(val) != 'nan':
+                return str(val).strip()
+        
+        # If not found, try inside standard_charges
+        if 'standard_charges' in row:
+            sc_val = row.get('standard_charges')
+            sc_parsed = parse_json_value(sc_val)
+            
+            if isinstance(sc_parsed, list) and len(sc_parsed) > 0:
+                charge_obj = sc_parsed[0]
+                if isinstance(charge_obj, dict):
+                    # Try primary, then fallback
+                    if primary:
+                        val = charge_obj.get(primary)
+                        if val is not None and str(val).strip():
+                            return str(val).strip()
+                    if fallback:
+                        val = charge_obj.get(fallback)
+                        if val is not None and str(val).strip():
+                            return str(val).strip()
+            elif isinstance(sc_parsed, dict):
+                # Try primary, then fallback
+                if primary:
+                    val = sc_parsed.get(primary)
+                    if val is not None and str(val).strip():
+                        return str(val).strip()
+                if fallback:
+                    val = sc_parsed.get(fallback)
+                    if val is not None and str(val).strip():
+                        return str(val).strip()
+    else:
+        # CSV format - direct column lookup
+        if primary and primary in row:
+            val = row.get(primary)
+            if not pd.isna(val) and str(val).strip():
+                return str(val).strip()
+        
+        # Try fallback
+        if fallback and fallback in row:
+            val = row.get(fallback)
+            if not pd.isna(val) and str(val).strip():
+                return str(val).strip()
     
     return default
 
 
-def find_data_file(hospital_id):
+def sanitize_filename(name):
+    """Create a safe directory/file name (matches download_all.py)."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    return safe[:100]  # Limit length
+
+
+def find_data_file(hospital_name):
     """Find the data file for a hospital."""
-    hospital_dir = DOWNLOADS_DIR / hospital_id
+    # Use the same folder naming as download_all.py
+    safe_name = sanitize_filename(hospital_name)
+    hospital_dir = DOWNLOADS_DIR / safe_name
     if not hospital_dir.exists():
         return None
     
@@ -217,6 +344,36 @@ def find_data_file(hospital_id):
             return f
     
     return None
+
+
+def find_correct_header_row(csv_file, expected_columns, encoding='utf-8', max_try=5):
+    """
+    Try different header rows to find one that contains the expected columns.
+    Returns (header_row_index, found_columns_count) or (None, 0) if not found.
+    """
+    for header_row in range(max_try):
+        try:
+            df = pd.read_csv(csv_file, header=header_row, nrows=1, dtype=str, encoding=encoding)
+            found_count = sum(1 for col in expected_columns if col in df.columns)
+            if found_count > 0:
+                return header_row, found_count
+        except:
+            continue
+    
+    # Try with different encoding
+    try:
+        for header_row in range(max_try):
+            try:
+                df = pd.read_csv(csv_file, header=header_row, nrows=1, dtype=str, encoding='iso-8859-1')
+                found_count = sum(1 for col in expected_columns if col in df.columns)
+                if found_count > 0:
+                    return header_row, found_count
+            except:
+                continue
+    except:
+        pass
+    
+    return None, 0
 
 
 def delete_hospital_data(session, hospital_id):
@@ -264,7 +421,7 @@ def ingest_csv_tall(df, config, hospital_id, session, skip_rules):
         desc = str(desc).strip()
         
         # Extract setting
-        setting = extract_setting(row, config)
+        setting = extract_setting(row, config, is_json=False)
         
         # Get or create item
         item_key = (code, desc, setting)
@@ -283,6 +440,16 @@ def ingest_csv_tall(df, config, hospital_id, session, skip_rules):
             item_id = item.id
             item_cache[item_key] = item_id
             items_created += 1
+        
+        # Auto-detect header style: if payer names are in column names, treat as header style
+        if payer_style == 'column':
+            # Check if we have columns with payer names embedded (header style)
+            header_style_cols = [col for col in df.columns if 
+                                ('negotiated_dollar' in str(col) or 'estimated_amount' in str(col)) and
+                                '|' in str(col) and len(str(col).split('|')) >= 2]
+            if header_style_cols:
+                # Found columns with payer names in them - this is actually header style
+                payer_style = 'header'
         
         # Extract prices based on payer style
         if payer_style == 'column':
@@ -390,7 +557,7 @@ def ingest_csv_wide(df, config, hospital_id, session, skip_rules):
         desc = str(desc).strip()
         
         # Extract setting
-        setting = extract_setting(row, config)
+        setting = extract_setting(row, config, is_json=False)
         
         # Create item
         item = Item(
@@ -435,6 +602,239 @@ def ingest_csv_wide(df, config, hospital_id, session, skip_rules):
     return items_created, prices_created
 
 
+def ingest_json(data, config, hospital_id, session, skip_rules):
+    """
+    Ingest a JSON file where data is a list of records or dict with nested arrays.
+    """
+    price_ext = config.get('price_extraction', {})
+    desc_col = config.get('description_column', 'description')
+    notes_col = config.get('notes_column')
+    
+    # Item cache to avoid duplicates
+    item_cache = {}  # (code, description, setting) -> item_id
+    price_dedupe = set()  # (item_id, payer, plan, amount, notes)
+    
+    items_created = 0
+    prices_created = 0
+    
+    # Handle different JSON structures
+    records = None
+    if isinstance(data, list):
+        records = data
+    elif isinstance(data, dict):
+        # Look for common array keys
+        for key in ['standard_charge_information', 'data', 'items', 'records']:
+            if key in data and isinstance(data[key], list):
+                records = data[key]
+                break
+    
+    if not records:
+        raise ValueError("Could not parse JSON structure - no records found")
+    
+    print(f"  Processing {len(records):,} JSON records...")
+    
+    for idx, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        
+        # Extract code (handles nested JSON structures)
+        code, code_type = extract_code(record, config, is_json=True)
+        if not code or code == 'UNKNOWN':
+            continue
+        
+        # Extract description
+        desc = record.get(desc_col, 'No Description')
+        if desc is None or (isinstance(desc, str) and desc.strip() == ''):
+            desc = 'No Description'
+        desc = str(desc).strip()
+        
+        # Extract setting (handles nested JSON structures)
+        setting = extract_setting(record, config, is_json=True)
+        
+        # Get or create item
+        item_key = (code, desc, setting)
+        if item_key in item_cache:
+            item_id = item_cache[item_key]
+        else:
+            item = Item(
+                code=code,
+                code_type=code_type,
+                description=desc,
+                hospital_id=hospital_id,
+                setting=setting
+            )
+            session.add(item)
+            session.flush()
+            item_id = item.id
+            item_cache[item_key] = item_id
+            items_created += 1
+        
+        # Extract prices from nested standard_charges structure
+        if 'standard_charges' in record:
+            sc_val = record.get('standard_charges')
+            sc_parsed = parse_json_value(sc_val)
+            
+            if isinstance(sc_parsed, list) and len(sc_parsed) > 0:
+                # standard_charges is a list of charge objects
+                for charge_obj in sc_parsed:
+                    if not isinstance(charge_obj, dict):
+                        continue
+                    
+                    # Extract gross charge
+                    if 'gross_charge' in charge_obj:
+                        gross_val = charge_obj['gross_charge']
+                        if gross_val is not None:
+                            price_val, price_note = parse_price(gross_val, skip_rules)
+                            if price_val is not None or price_note is not None:
+                                dedupe_key = (item_id, 'GROSS', None, price_val, price_note)
+                                if dedupe_key not in price_dedupe:
+                                    session.add(Price(item_id=item_id, payer='GROSS', plan=None, amount=price_val, notes=price_note))
+                                    price_dedupe.add(dedupe_key)
+                                    prices_created += 1
+                    
+                    # Extract discounted cash
+                    if 'discounted_cash' in charge_obj:
+                        cash_val = charge_obj['discounted_cash']
+                        if cash_val is not None:
+                            price_val, price_note = parse_price(cash_val, skip_rules)
+                            if price_val is not None or price_note is not None:
+                                dedupe_key = (item_id, 'DISCOUNTED_CASH', None, price_val, price_note)
+                                if dedupe_key not in price_dedupe:
+                                    session.add(Price(item_id=item_id, payer='DISCOUNTED_CASH', plan=None, amount=price_val, notes=price_note))
+                                    price_dedupe.add(dedupe_key)
+                                    prices_created += 1
+                    
+                    # Extract from payers_information array (insurance prices)
+                    if 'payers_information' in charge_obj:
+                        payers_info = charge_obj['payers_information']
+                        if isinstance(payers_info, list):
+                            for payer_obj in payers_info:
+                                if isinstance(payer_obj, dict):
+                                    payer_name = payer_obj.get('payer_name') or payer_obj.get('payer')
+                                    plan_name = payer_obj.get('plan_name') or payer_obj.get('plan')
+                                    estimated = payer_obj.get('estimated_amount') or payer_obj.get('negotiated_dollar')
+                                    
+                                    if payer_name and estimated is not None:
+                                        payer_name = str(payer_name).strip()
+                                        plan_name = str(plan_name).strip() if plan_name else None
+                                        price_val, price_note = parse_price(estimated, skip_rules)
+                                        
+                                        # Add notes from payer object if available
+                                        additional_notes = payer_obj.get('additional_payer_notes')
+                                        if additional_notes and price_note:
+                                            price_note = f"{price_note}; {str(additional_notes).strip()}"
+                                        elif additional_notes:
+                                            price_note = str(additional_notes).strip()
+                                        
+                                        if price_val is not None or price_note is not None:
+                                            dedupe_key = (item_id, payer_name, plan_name, price_val, price_note)
+                                            if dedupe_key not in price_dedupe:
+                                                session.add(Price(item_id=item_id, payer=payer_name, plan=plan_name, amount=price_val, notes=price_note))
+                                                price_dedupe.add(dedupe_key)
+                                                prices_created += 1
+                    
+                    # Extract negotiated prices (payer-specific) - fallback for other structures
+                    payer_style = price_ext.get('payer_style', 'column')
+                    if payer_style == 'column':
+                        # Payer/plan are in separate fields
+                        payer_col = price_ext.get('payer_column', 'payer_name')
+                        plan_col = price_ext.get('plan_column', 'plan_name')
+                        price_col = price_ext.get('price_column', 'negotiated_dollar')
+                        
+                        # Check if payer info is in charge_obj or parent record
+                        payer = charge_obj.get(payer_col) or record.get(payer_col)
+                        plan = charge_obj.get(plan_col) or record.get(plan_col)
+                        price_val_raw = charge_obj.get(price_col) or record.get(price_col)
+                        
+                        if payer and price_val_raw is not None:
+                            payer = str(payer).strip()
+                            plan = str(plan).strip() if plan else None
+                            price_val, price_note = parse_price(price_val_raw, skip_rules)
+                            
+                            if price_val is not None or price_note is not None:
+                                dedupe_key = (item_id, payer, plan, price_val, price_note)
+                                if dedupe_key not in price_dedupe:
+                                    session.add(Price(item_id=item_id, payer=payer, plan=plan, amount=price_val, notes=price_note))
+                                    price_dedupe.add(dedupe_key)
+                                    prices_created += 1
+                    else:
+                        # Payer style = 'header' - scan for negotiated prices in charge_obj
+                        for key, val in charge_obj.items():
+                            if ('negotiated' in key.lower() or 'estimated' in key.lower()) and isinstance(val, (int, float)):
+                                # Try to parse payer from key name
+                                payer = key.replace('_', ' ').title()[:50]
+                                price_val, price_note = parse_price(val, skip_rules)
+                                if price_val is not None or price_note is not None:
+                                    dedupe_key = (item_id, payer, None, price_val, price_note)
+                                    if dedupe_key not in price_dedupe:
+                                        session.add(Price(item_id=item_id, payer=payer, plan=None, amount=price_val, notes=price_note))
+                                        price_dedupe.add(dedupe_key)
+                                        prices_created += 1
+            elif isinstance(sc_parsed, dict):
+                # standard_charges is a single object
+                charge_obj = sc_parsed
+                
+                # Extract gross charge
+                if 'gross_charge' in charge_obj:
+                    gross_val = charge_obj['gross_charge']
+                    if gross_val is not None:
+                        price_val, price_note = parse_price(gross_val, skip_rules)
+                        if price_val is not None or price_note is not None:
+                            dedupe_key = (item_id, 'GROSS', None, price_val, price_note)
+                            if dedupe_key not in price_dedupe:
+                                session.add(Price(item_id=item_id, payer='GROSS', plan=None, amount=price_val, notes=price_note))
+                                price_dedupe.add(dedupe_key)
+                                prices_created += 1
+                
+                # Extract discounted cash
+                if 'discounted_cash' in charge_obj:
+                    cash_val = charge_obj['discounted_cash']
+                    if cash_val is not None:
+                        price_val, price_note = parse_price(cash_val, skip_rules)
+                        if price_val is not None or price_note is not None:
+                            dedupe_key = (item_id, 'DISCOUNTED_CASH', None, price_val, price_note)
+                            if dedupe_key not in price_dedupe:
+                                session.add(Price(item_id=item_id, payer='DISCOUNTED_CASH', plan=None, amount=price_val, notes=price_note))
+                                price_dedupe.add(dedupe_key)
+                                prices_created += 1
+                
+                # Extract from payers_information array (insurance prices)
+                if 'payers_information' in charge_obj:
+                    payers_info = charge_obj['payers_information']
+                    if isinstance(payers_info, list):
+                        for payer_obj in payers_info:
+                            if isinstance(payer_obj, dict):
+                                payer_name = payer_obj.get('payer_name') or payer_obj.get('payer')
+                                plan_name = payer_obj.get('plan_name') or payer_obj.get('plan')
+                                estimated = payer_obj.get('estimated_amount') or payer_obj.get('negotiated_dollar')
+                                
+                                if payer_name and estimated is not None:
+                                    payer_name = str(payer_name).strip()
+                                    plan_name = str(plan_name).strip() if plan_name else None
+                                    price_val, price_note = parse_price(estimated, skip_rules)
+                                    
+                                    # Add notes from payer object if available
+                                    additional_notes = payer_obj.get('additional_payer_notes')
+                                    if additional_notes and price_note:
+                                        price_note = f"{price_note}; {str(additional_notes).strip()}"
+                                    elif additional_notes:
+                                        price_note = str(additional_notes).strip()
+                                    
+                                    if price_val is not None or price_note is not None:
+                                        dedupe_key = (item_id, payer_name, plan_name, price_val, price_note)
+                                        if dedupe_key not in price_dedupe:
+                                            session.add(Price(item_id=item_id, payer=payer_name, plan=plan_name, amount=price_val, notes=price_note))
+                                            price_dedupe.add(dedupe_key)
+                                            prices_created += 1
+        
+        # Commit periodically
+        if idx % 1000 == 0:
+            session.commit()
+    
+    session.commit()
+    return items_created, prices_created
+
+
 def ingest_hospital(hospital_id, config, manifest_info, session):
     """
     Ingest a single hospital.
@@ -448,7 +848,7 @@ def ingest_hospital(hospital_id, config, manifest_info, session):
     print(f"  Database ID: {db_hospital_id}")
     
     # Find data file
-    data_file = find_data_file(hospital_id)
+    data_file = find_data_file(hospital_name)
     if not data_file:
         return False, 0, 0, "Data file not found"
     
@@ -470,11 +870,40 @@ def ingest_hospital(hospital_id, config, manifest_info, session):
     
     try:
         if data_file.suffix.lower() == '.csv':
-            # Load CSV
+            # Build list of expected columns for validation
+            expected_columns = []
+            code_ext = config.get('code_extraction', {})
+            code_cols = code_ext.get('columns', [])
+            if code_cols:
+                expected_columns.extend(code_cols)
+            else:
+                code_col = config.get('code_column')
+                if code_col:
+                    expected_columns.append(code_col)
+            
+            desc_col = config.get('description_column', 'description')
+            expected_columns.append(desc_col)
+            
+            # Safety check: verify header row works
             try:
-                df = pd.read_csv(data_file, header=header_row, dtype=str, encoding=encoding)
+                df_test = pd.read_csv(data_file, header=header_row, nrows=1, dtype=str, encoding=encoding)
+                found_count = sum(1 for col in expected_columns if col in df_test.columns) if expected_columns else 1
+            except:
+                found_count = 0
+            
+            # Auto-detect header row if expected columns not found
+            actual_header_row = header_row
+            if found_count == 0 and expected_columns:
+                detected_row, detected_count = find_correct_header_row(data_file, expected_columns, encoding)
+                if detected_row is not None and detected_count > found_count:
+                    actual_header_row = detected_row
+                    print(f"  ⚠️  Header row corrected: {header_row} → {actual_header_row} (expected columns not found)")
+            
+            # Load CSV with (possibly corrected) header row
+            try:
+                df = pd.read_csv(data_file, header=actual_header_row, dtype=str, encoding=encoding)
             except UnicodeDecodeError:
-                df = pd.read_csv(data_file, header=header_row, dtype=str, encoding='iso-8859-1')
+                df = pd.read_csv(data_file, header=actual_header_row, dtype=str, encoding='iso-8859-1')
             
             print(f"  Loaded {len(df):,} rows")
             
@@ -487,9 +916,16 @@ def ingest_hospital(hospital_id, config, manifest_info, session):
             return True, items, prices, None
             
         elif data_file.suffix.lower() == '.json':
-            # JSON ingestion (simplified for now)
-            print(f"  ⚠️  JSON ingestion not fully implemented yet")
-            return False, 0, 0, "JSON format not yet supported"
+            # Load JSON file
+            with open(data_file, 'r', encoding=encoding) as f:
+                data = json.load(f)
+            
+            print(f"  Loaded JSON file")
+            
+            # Ingest JSON
+            items, prices = ingest_json(data, config, db_hospital_id, session, skip_rules)
+            
+            return True, items, prices, None
         
         else:
             return False, 0, 0, f"Unsupported file type: {data_file.suffix}"

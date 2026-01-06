@@ -485,13 +485,31 @@ def analyze_csv_file(file_path):
                         if a["inferred_purpose"] in ["price", "standard_charge", "negotiated_rate"] 
                         or a["likely_type"] == "price"]
         
+        # Detect header-style payer format (payers embedded in column names)
+        header_style_payer_columns = []
+        for col in columns:
+            col_str = str(col)
+            # Look for columns with payer names embedded (e.g., standard_charge|Aetna|...)
+            if ('negotiated_dollar' in col_str or 'estimated_amount' in col_str) and '|' in col_str:
+                parts = col_str.split('|')
+                if len(parts) >= 2:
+                    # Second part might be payer name
+                    potential_payer = parts[1].strip()
+                    # Exclude common non-payer values
+                    if potential_payer and potential_payer.lower() not in ['gross', 'discounted_cash', 'min', 'max', 'negotiated_dollar', 'estimated_amount']:
+                        header_style_payer_columns.append(col_str)
+        
+        has_header_style_payers = len(header_style_payer_columns) > 0
+        
         profile["detected_patterns"] = {
             "code_columns": code_columns[:5],  # Top 5
             "description_columns": desc_columns[:3],
             "price_columns": price_columns[:20],  # Can have many in wide format
             "has_payer_column": any(a["inferred_purpose"] == "payer" for a in profile["column_analyses"]),
             "has_plan_column": any(a["inferred_purpose"] == "plan" for a in profile["column_analyses"]),
-            "has_notes_column": any(a["inferred_purpose"] == "notes" for a in profile["column_analyses"])
+            "has_notes_column": any(a["inferred_purpose"] == "notes" for a in profile["column_analyses"]),
+            "has_header_style_payers": has_header_style_payers,
+            "header_style_payer_columns": header_style_payer_columns[:10] if has_header_style_payers else []  # Store examples
         }
         
     except Exception as e:

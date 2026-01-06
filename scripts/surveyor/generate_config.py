@@ -125,23 +125,56 @@ def create_prompt(profile, hospital_name):
             patterns_text += "Has payer column: Yes (TALL format indicator)\n"
         if detected_patterns.get("has_plan_column"):
             patterns_text += "Has plan column: Yes\n"
+        # Header-style payer format detection (from analyze_csv.py)
+        if detected_patterns.get("has_header_style_payers"):
+            header_cols = detected_patterns.get("header_style_payer_columns", [])
+            patterns_text += f"\n⚠️ HEADER STYLE DETECTED: Found {len(header_cols)} columns with payer names in column names:\n"
+            patterns_text += f"Examples: {header_cols[:5]}\n"
+            patterns_text += "This indicates payer_style should be 'header', NOT 'column'!\n"
         # JSON-specific patterns
         if detected_patterns.get("has_nested_charges"):
             patterns_text += "Has nested charge structure: Yes\n"
         if detected_patterns.get("record_keys"):
             patterns_text += f"Record keys: {detected_patterns['record_keys'][:10]}\n"
     
+    # Fallback: Check for header-style payer format if not in detected_patterns (for backwards compatibility)
+    if not detected_patterns.get("has_header_style_payers"):
+        header_style_indicators = []
+        for col in all_columns:
+            col_str = str(col)
+            # Look for columns with payer names embedded (e.g., standard_charge|Aetna|...)
+            if ('negotiated_dollar' in col_str or 'estimated_amount' in col_str) and '|' in col_str:
+                parts = col_str.split('|')
+                if len(parts) >= 2:
+                    # Second part might be payer name
+                    potential_payer = parts[1].strip()
+                    # Exclude common non-payer values
+                    if potential_payer and potential_payer.lower() not in ['gross', 'discounted_cash', 'min', 'max', 'negotiated_dollar', 'estimated_amount']:
+                        header_style_indicators.append(col_str)
+        
+        if header_style_indicators:
+            patterns_text += f"\n⚠️ HEADER STYLE DETECTED: Found {len(header_style_indicators)} columns with payer names in column names:\n"
+            patterns_text += f"Examples: {header_style_indicators[:5]}\n"
+            patterns_text += "This indicates payer_style should be 'header', NOT 'column'!\n"
+    
     # List ALL columns for code detection
     all_columns = profile.get("columns", [])
     code_like_cols = [c for c in all_columns if 'code' in c.lower()]
     
+    # Get profile values that MUST be used (deterministic from Phase 2)
+    profile_header_row = profile.get('header_row', 0)
+    profile_format_type = profile.get('format_type', 'tall')
+    profile_encoding = profile.get('encoding', 'utf-8')
+    
     prompt = f"""You are a data engineer creating ingestion configs for hospital pricing files. Analyze carefully and generate a comprehensive JSON configuration.
 
 HOSPITAL: {hospital_name}
-FORMAT TYPE: {format_type}
 TOTAL ROWS: {total_rows:,}
-HEADER ROW: {profile.get('header_row', 0)}
-ENCODING: {profile.get('encoding', 'utf-8')}
+
+CRITICAL - USE THESE VALUES EXACTLY (DO NOT CHANGE):
+- FORMAT TYPE: {profile_format_type} (use this exact value)
+- HEADER ROW: {profile_header_row} (use this exact value - 0-indexed)
+- ENCODING: {profile_encoding} (use this exact value)
 
 ALL COLUMNS WITH "CODE" IN NAME:
 {code_like_cols}
@@ -156,9 +189,9 @@ Generate a JSON config with this EXACT structure:
 
 {{
   "hospital_name": "{hospital_name}",
-  "format_type": "tall" or "wide" or "json",
-  "header_row": number (0-indexed),
-  "encoding": "utf-8" or "iso-8859-1",
+  "format_type": "{profile_format_type}",
+  "header_row": {profile_header_row},
+  "encoding": "{profile_encoding}",
   
   "code_extraction": {{
     "columns": ["code|1", "code|2", ...] or ["code", "hcpcs_code", ...],
@@ -199,11 +232,24 @@ Generate a JSON config with this EXACT structure:
 }}
 
 RULES:
-1. For "payer_style": Use "column" if there's a payer_name column (each row has payer). Use "header" if payers are encoded in column names (standard_charge|Aetna|PPO|negotiated_dollar).
-2. For "code_extraction.columns": List ALL code columns found (code|1, code|2, code|3, code|4, code|5 or equivalent)
-3. For JSON format files: Set format_type to "json" and adapt price_extraction accordingly
+1. **CRITICAL**: Use format_type="{profile_format_type}", header_row={profile_header_row}, encoding="{profile_encoding}" exactly as provided above. DO NOT change these values.
+2. **CRITICAL - PAYER STYLE DETECTION**: 
+   - If you see columns like "standard_charge|Aetna|Default|negotiated_dollar" or "estimated_amount|Blue Cross|...", this is HEADER style (payers in column names).
+   - If there's a separate "payer_name" or "payer" column that appears in every row, this is COLUMN style.
+   - Look for the "HEADER STYLE DETECTED" warning above - if present, you MUST use payer_style="header".
+   - When payer_style="header", set payer_column=null (no separate payer column exists).
+3. For "code_extraction.columns": List ALL code columns found (code|1, code|2, code|3, code|4, code|5 or equivalent)
 4. Look for code type columns that end in "|type" (e.g., code|1|type contains "CPT", "HCPCS", etc.)
 5. If no type columns exist, set type_columns to null (we'll infer from code format)
+6. For description_column: Find the best column name that contains procedure/item descriptions
+7. For setting_extraction: 
+   - For CSV files: Find the column name (e.g., "setting", "billing_class")
+   - For JSON files: Provide the key name to look for in nested structures (e.g., "setting", "billing_class"), even if it's not a top-level field. The setting may be nested in standard_charges[0]['setting'].
+   - Always provide "primary" (never null) - use "setting" if found, otherwise "billing_class"
+   - "fallback" can be null if no fallback column exists
+
+YOUR TASK: Generate the semantic mappings (code_extraction, price_extraction, description_column, etc.)
+DO NOT CHANGE: format_type, header_row, encoding (these are provided above)
 
 OUTPUT ONLY VALID JSON. No markdown, no explanation."""
 
@@ -280,6 +326,11 @@ def validate_config(config):
         if not price_ext.get('payer_style') and not price_ext.get('type'):
             return False, "price_extraction missing payer_style or type"
     
+    # Validate setting_extraction - primary must never be None
+    setting_ext = config.get('setting_extraction', {})
+    if setting_ext.get('primary') is None:
+        return False, "setting_extraction.primary cannot be None - must provide key name (e.g., 'setting', 'billing_class')"
+    
     return True, None
 
 
@@ -314,6 +365,80 @@ def generate_config_for_hospital(hospital_id, hospital_name, profile):
         is_valid, validation_error = validate_config(config)
         if not is_valid:
             return None, validation_error
+        
+        # ENFORCE PROFILE VALUES (hybrid approach)
+        # These are deterministic from Phase 2 - AI should not change them
+        profile_header_row = profile.get('header_row', 0)
+        profile_format_type = profile.get('format_type', 'tall')
+        profile_encoding = profile.get('encoding', 'utf-8')
+        
+        corrections = []
+        
+        if config.get('header_row') != profile_header_row:
+            corrections.append(f"header_row: {config.get('header_row')} → {profile_header_row}")
+            config['header_row'] = profile_header_row
+        
+        if config.get('format_type') != profile_format_type:
+            corrections.append(f"format_type: {config.get('format_type')} → {profile_format_type}")
+            config['format_type'] = profile_format_type
+        
+        if config.get('encoding') != profile_encoding:
+            corrections.append(f"encoding: {config.get('encoding')} → {profile_encoding}")
+            config['encoding'] = profile_encoding
+        
+        # ENFORCE setting_extraction values (required for proper extraction)
+        # primary must never be None - this is a critical field
+        setting_ext = config.get('setting_extraction', {})
+        if setting_ext.get('primary') is None:
+            # For JSON files, setting is nested but we still need the key name
+            # Default to "setting" which is the most common key name
+            corrections.append("setting_extraction.primary: None → 'setting' (REQUIRED)")
+            setting_ext['primary'] = 'setting'
+            config['setting_extraction'] = setting_ext
+        
+        # For JSON files, always provide fallback if missing
+        if setting_ext.get('fallback') is None and profile_format_type == 'json':
+            corrections.append("setting_extraction.fallback: None → 'billing_class' (JSON files need fallback)")
+            setting_ext['fallback'] = 'billing_class'
+            config['setting_extraction'] = setting_ext
+        
+        # AUTO-CORRECT payer_style if header style is detected but config says column
+        if profile_format_type in ['tall', 'wide']:
+            price_ext = config.get('price_extraction', {})
+            current_payer_style = price_ext.get('payer_style', price_ext.get('type'))
+            
+            # Check if header style should be used (use detected_patterns if available, fallback to column scan)
+            detected_patterns = profile.get("detected_patterns", {})
+            has_header_style = detected_patterns.get("has_header_style_payers", False)
+            
+            if not has_header_style:
+                # Fallback: check columns directly
+                all_columns = profile.get("columns", [])
+                header_style_cols = [col for col in all_columns if 
+                                    ('negotiated_dollar' in str(col) or 'estimated_amount' in str(col)) and
+                                    '|' in str(col) and len(str(col).split('|')) >= 2]
+                has_header_style = len(header_style_cols) > 0
+            
+            if has_header_style and current_payer_style == 'column':
+                # Check if there's actually a payer column (to distinguish from header style)
+                has_payer_column = detected_patterns.get("has_payer_column", False)
+                if not has_payer_column:
+                    # Fallback: check columns directly
+                    all_columns = profile.get("columns", [])
+                    has_payer_column = any('payer' in str(col).lower() and '|' not in str(col) 
+                                          for col in all_columns)
+                
+                if not has_payer_column:
+                    # No payer column found, but we have header-style columns - correct it
+                    corrections.append(f"payer_style: 'column' → 'header' (detected payer names in column names)")
+                    price_ext['payer_style'] = 'header'
+                    price_ext['payer_column'] = None  # Clear payer_column for header style
+                    config['price_extraction'] = price_ext
+        
+        # Log corrections if any
+        if corrections:
+            print(f"  ⚠️  AI changed profile values, corrected: {', '.join(corrections)}")
+            config['_corrections'] = corrections
         
         # Add metadata
         config['_hospital_id'] = hospital_id
