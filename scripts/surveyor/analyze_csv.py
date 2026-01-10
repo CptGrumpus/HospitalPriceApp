@@ -323,19 +323,22 @@ def analyze_column(values, column_name):
             pass
     
     # Pattern detection for column name
+    # IMPORTANT: Order matters! More specific patterns must come first
     col_lower = column_name.lower()
     inferred_purpose = "unknown"
     
-    if any(k in col_lower for k in ['code', 'cpt', 'hcpcs', 'icd', 'drg', 'ndc']):
-        inferred_purpose = "code"
-    elif any(k in col_lower for k in ['desc', 'name', 'procedure', 'service']):
-        inferred_purpose = "description"
-    elif any(k in col_lower for k in ['charge', 'price', 'amount', 'rate', 'dollar', 'cost']):
-        inferred_purpose = "price"
-    elif any(k in col_lower for k in ['payer', 'insurance', 'carrier']):
+    # Check for payer/insurance FIRST (before "name" which could match "payer_name")
+    if any(k in col_lower for k in ['payer', 'insurance', 'carrier']):
         inferred_purpose = "payer"
     elif any(k in col_lower for k in ['plan', 'product']):
         inferred_purpose = "plan"
+    elif any(k in col_lower for k in ['code', 'cpt', 'hcpcs', 'icd', 'drg', 'ndc']):
+        inferred_purpose = "code"
+    # Check for description, but exclude columns that are clearly payer-related
+    elif any(k in col_lower for k in ['desc', 'procedure', 'service']) or ('name' in col_lower and 'payer' not in col_lower and 'plan' not in col_lower):
+        inferred_purpose = "description"
+    elif any(k in col_lower for k in ['charge', 'price', 'amount', 'rate', 'dollar', 'cost']):
+        inferred_purpose = "price"
     elif any(k in col_lower for k in ['type', 'class', 'category', 'setting']):
         inferred_purpose = "category"
     elif any(k in col_lower for k in ['note', 'comment', 'additional', 'modifier']):
@@ -388,6 +391,116 @@ def detect_format_type(columns, column_analyses):
         return "wide"
     else:
         return "tall"  # Default assumption
+
+
+def generate_config_template(profile, hospital_name=None):
+    """
+    Generate a config template with deterministic values from Phase 2 analysis.
+    Properly separates code columns from type columns.
+    
+    Args:
+        profile: Analysis profile dictionary
+        hospital_name: Optional hospital name
+    
+    Returns:
+        Dictionary with config template structure
+    """
+    detected_patterns = profile.get("detected_patterns", {})
+    format_type = profile.get("format_type", "tall")
+    header_row = profile.get("header_row", 0)
+    encoding = profile.get("encoding", "utf-8")
+    
+    # Separate code columns from type columns
+    all_code_like_cols = detected_patterns.get("code_columns", [])
+    code_only_columns = []
+    type_only_columns = []
+    
+    for col in all_code_like_cols:
+        col_str = str(col)
+        # Check if column name suggests it's a type column
+        if '|type' in col_str.lower() or col_str.endswith('|type') or col_str.endswith('_type'):
+            type_only_columns.append(col)
+        else:
+            code_only_columns.append(col)
+    
+    # Match type columns to code columns by name pattern
+    # e.g., 'code|1' -> 'code|1|type', 'code|2' -> 'code|2|type'
+    matched_type_columns = []
+    if code_only_columns and type_only_columns:
+        for code_col in code_only_columns:
+            code_col_str = str(code_col)
+            # Try to find matching type column
+            matching_type = None
+            for type_col in type_only_columns:
+                type_col_str = str(type_col)
+                # Check if type column matches (e.g., 'code|1|type' matches 'code|1')
+                if code_col_str in type_col_str or type_col_str.startswith(code_col_str.split('|')[0]):
+                    matching_type = type_col
+                    break
+            matched_type_columns.append(matching_type)
+    elif not type_only_columns:
+        # No type columns found, set to None
+        matched_type_columns = [None] * len(code_only_columns) if code_only_columns else None
+    
+    # If we have type columns but couldn't match them, use them in order
+    if type_only_columns and len(matched_type_columns) < len(code_only_columns):
+        for i, type_col in enumerate(type_only_columns):
+            if i < len(code_only_columns):
+                if i >= len(matched_type_columns):
+                    matched_type_columns.append(type_col)
+                elif matched_type_columns[i] is None:
+                    matched_type_columns[i] = type_col
+    
+    # If no matches found, set to None
+    if not matched_type_columns:
+        matched_type_columns = None
+    
+    # Get other deterministic values
+    description_column = detected_patterns.get("description_column")
+    payer_style = detected_patterns.get("payer_style")
+    payer_column = detected_patterns.get("payer_column")
+    setting_primary = detected_patterns.get("setting_primary", "setting")
+    setting_fallback = detected_patterns.get("setting_fallback", "billing_class")
+    
+    # Find notes column
+    notes_column = None
+    for col_analysis in profile.get("column_analyses", []):
+        if col_analysis.get("inferred_purpose") == "notes":
+            notes_column = col_analysis.get("column_name")
+            break
+    
+    # Build config template
+    template = {
+        "hospital_name": hospital_name or "Unknown",
+        "format_type": format_type,
+        "header_row": header_row,
+        "encoding": encoding,
+        "code_extraction": {
+            "columns": code_only_columns if code_only_columns else all_code_like_cols[:3],  # Fallback if separation failed
+            "type_columns": matched_type_columns if matched_type_columns and any(matched_type_columns) else None,
+            "priority": ["CPT", "HCPCS", "MS-DRG", "APR-DRG", "NDC", "CDM", "Local"],
+            "auto_normalize": True
+        },
+        "description_column": description_column,
+        "setting_extraction": {
+            "primary": setting_primary,
+            "fallback": setting_fallback if setting_fallback else None,
+            "default": "UNKNOWN"
+        },
+        "price_extraction": {
+            "type": format_type,
+            "payer_style": payer_style,
+            "payer_column": payer_column
+        },
+        "skip_rules": {
+            "placeholder_threshold": 99999999,
+            "formula_patterns": ["Formula", "algorithm"],
+            "empty_code_skip": True
+        },
+        "notes_column": notes_column
+    }
+    
+    return template
 
 
 def analyze_csv_file(file_path):
@@ -481,9 +594,65 @@ def analyze_csv_file(file_path):
                        if a["inferred_purpose"] == "code" or a["likely_type"] == "code"]
         desc_columns = [a["column_name"] for a in profile["column_analyses"] 
                        if a["inferred_purpose"] == "description"]
-        price_columns = [a["column_name"] for a in profile["column_analyses"] 
-                        if a["inferred_purpose"] in ["price", "standard_charge", "negotiated_rate"] 
-                        or a["likely_type"] == "price"]
+        
+        # Price columns: filter out empty ones and prioritize by fill rate
+        # Also detect placeholder-heavy columns (e.g., all 999999999 values)
+        price_column_candidates = []
+        for a in profile["column_analyses"]:
+            col_name = a["column_name"]
+            inferred = a["inferred_purpose"]
+            likely_type = a["likely_type"]
+            fill_rate = a.get("fill_rate", 0)
+            
+            # Check if it's a price-related column
+            is_price_col = (inferred in ["price", "standard_charge", "negotiated_rate"] 
+                           or likely_type == "price")
+            
+            if is_price_col:
+                # Check for placeholder values in sample data
+                sample_values = a.get("sample_values", [])
+                is_placeholder_heavy = False
+                if sample_values and fill_rate > 0.5:  # Only check if mostly filled
+                    # Check if all sample values are the same large number (placeholder)
+                    try:
+                        numeric_samples = []
+                        for val in sample_values[:10]:  # Check up to 10 samples
+                            try:
+                                num = float(str(val).replace('$', '').replace(',', ''))
+                                numeric_samples.append(num)
+                            except:
+                                pass
+                        
+                        if numeric_samples:
+                            # If all values are the same and > 999999, likely placeholder
+                            if len(set(numeric_samples)) == 1 and numeric_samples[0] >= 999999:
+                                is_placeholder_heavy = True
+                    except:
+                        pass
+                
+                price_column_candidates.append({
+                    "column_name": col_name,
+                    "fill_rate": fill_rate,
+                    "likely_type": likely_type,
+                    "inferred_purpose": inferred,
+                    "is_placeholder_heavy": is_placeholder_heavy,
+                    "sample_values": sample_values[:5]  # Store samples for AI
+                })
+        
+        # Filter and sort: remove empty columns, prioritize by fill rate, exclude placeholders
+        price_columns_filtered = [
+            c for c in price_column_candidates 
+            if c["fill_rate"] > 0.01 and not c["is_placeholder_heavy"]  # At least 1% filled, not placeholders
+        ]
+        
+        # Sort by fill rate (descending), then by column name
+        price_columns_filtered.sort(key=lambda x: (-x["fill_rate"], x["column_name"]))
+        
+        # Extract just column names for backward compatibility
+        price_columns = [c["column_name"] for c in price_columns_filtered]
+        
+        # Store detailed price column info for Phase 3 (AI config generation)
+        price_columns_detailed = price_columns_filtered[:20]  # Top 20
         
         # Detect header-style payer format (payers embedded in column names)
         header_style_payer_columns = []
@@ -501,16 +670,63 @@ def analyze_csv_file(file_path):
         
         has_header_style_payers = len(header_style_payer_columns) > 0
         
+        # Detect payer style (deterministic from Phase 2)
+        payer_style = None
+        payer_column = None
+        if has_header_style_payers:
+            payer_style = 'header'
+            payer_column = None
+        else:
+            # Check for payer column
+            payer_cols = [a["column_name"] for a in profile["column_analyses"] 
+                         if a["inferred_purpose"] == "payer"]
+            if payer_cols:
+                payer_style = 'column'
+                payer_column = payer_cols[0]  # Use first payer column found
+        
+        # Detect best description column
+        description_column = None
+        if desc_columns:
+            # Prefer columns with "description" in name, then "desc", then others
+            for col in desc_columns:
+                if 'description' in col.lower():
+                    description_column = col
+                    break
+            if not description_column:
+                description_column = desc_columns[0]
+        
+        # Detect setting columns
+        setting_primary = None
+        setting_fallback = None
+        setting_cols = [a["column_name"] for a in profile["column_analyses"] 
+                        if a["inferred_purpose"] == "category" and 
+                        ('setting' in a["column_name"].lower() or 'billing' in a["column_name"].lower())]
+        for col in setting_cols:
+            if 'setting' in col.lower() and not setting_primary:
+                setting_primary = col
+            elif 'billing' in col.lower() and not setting_fallback:
+                setting_fallback = col
+        
         profile["detected_patterns"] = {
             "code_columns": code_columns[:5],  # Top 5
             "description_columns": desc_columns[:3],
-            "price_columns": price_columns[:20],  # Can have many in wide format
+            "price_columns": price_columns[:20],  # Can have many in wide format (filtered and sorted)
+            "price_columns_detailed": price_columns_detailed,  # Detailed info with fill rates for AI
             "has_payer_column": any(a["inferred_purpose"] == "payer" for a in profile["column_analyses"]),
             "has_plan_column": any(a["inferred_purpose"] == "plan" for a in profile["column_analyses"]),
             "has_notes_column": any(a["inferred_purpose"] == "notes" for a in profile["column_analyses"]),
             "has_header_style_payers": has_header_style_payers,
-            "header_style_payer_columns": header_style_payer_columns[:10] if has_header_style_payers else []  # Store examples
+            "header_style_payer_columns": header_style_payer_columns[:10] if has_header_style_payers else [],  # Store examples
+            # Deterministic values for config template
+            "payer_style": payer_style,  # 'header' or 'column' or None if unclear
+            "payer_column": payer_column,  # Column name if column style
+            "description_column": description_column,  # Best guess
+            "setting_primary": setting_primary,  # Primary setting column
+            "setting_fallback": setting_fallback,  # Fallback setting column
         }
+        
+        # Generate config template with proper code/type column separation
+        profile["config_template"] = generate_config_template(profile, hospital_name=None)
         
     except Exception as e:
         profile["errors"].append(str(e))
@@ -651,6 +867,9 @@ def analyze_json_file(file_path):
                     charges = first_record['standard_charges']
                     if charges and isinstance(charges[0], dict):
                         profile["detected_patterns"]["charge_keys"] = list(charges[0].keys())
+                
+                # Generate config template for JSON files
+                profile["config_template"] = generate_config_template(profile, hospital_name=None)
             
     except json.JSONDecodeError as e:
         profile["errors"].append(f"JSON parse error: {str(e)}")
@@ -720,9 +939,13 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
         if actual_file_type in ["csv", "xlsx", "xls"]:
             print("  📊 Analyzing CSV structure...")
             profile = analyze_csv_file(file_path)
+            # Add hospital name to profile for config template generation
+            profile["hospital_name"] = hospital_name
         elif actual_file_type == "json":
             print("  📋 Analyzing JSON structure...")
             profile = analyze_json_file(file_path)
+            # Add hospital name to profile for config template generation
+            profile["hospital_name"] = hospital_name
         else:
             print(f"  ⚠️  Unsupported file type: {actual_file_type}")
             analysis_manifest["analyses"][hospital_id] = {

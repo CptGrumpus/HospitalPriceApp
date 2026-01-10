@@ -30,6 +30,17 @@ from sqlalchemy import text
 
 from src.database import SessionLocal, Item, Price, init_db
 
+# Import shared extraction functions
+sys.path.insert(0, str(Path(__file__).parent))
+from extractors import (
+    safe_get_value,
+    parse_json_value,
+    extract_code_from_value,
+    extract_code,
+    extract_setting,
+    PriceExtractor
+)
+
 # Configuration
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 CONFIGS_DIR = DATA_DIR / "configs"
@@ -108,213 +119,8 @@ def parse_price(price_str, skip_rules=None):
         return None, price_str_clean if price_str_clean else None
 
 
-def extract_code(row, config, is_json=False):
-    """
-    Extract the best code from a row using the config's code_extraction rules.
-    Returns (code, code_type).
-    Handles both CSV (pandas Series) and JSON (dict) formats.
-    """
-    code_ext = config.get('code_extraction', {})
-    columns = code_ext.get('columns', [])
-    type_columns = code_ext.get('type_columns', [])
-    priority = code_ext.get('priority', ['CPT', 'HCPCS', 'MS-DRG', 'APR-DRG', 'NDC', 'CDM', 'Local'])
-    auto_normalize = code_ext.get('auto_normalize', True)
-    
-    # Build priority map (lower = better)
-    priority_map = {code_type: i for i, code_type in enumerate(priority)}
-    priority_map['UNKNOWN'] = 999
-    
-    # Fallback: if no code_extraction, use old-style single column
-    if not columns:
-        code_col = config.get('code_column', 'code|1')
-        type_col = config.get('code_type_column')
-        
-        code_val = row.get(code_col) if code_col in row else None
-        
-        # For JSON, code might be nested
-        if is_json and code_val is not None:
-            code, code_type = extract_code_from_value(code_val)
-            if code:
-                return code, code_type or 'UNKNOWN'
-        
-        code = code_val if code_val else 'UNKNOWN'
-        code_type = row.get(type_col, 'UNKNOWN') if type_col and type_col in row else 'UNKNOWN'
-        return str(code).strip() if code else 'UNKNOWN', code_type
-    
-    # Find best code by priority
-    best_code = 'UNKNOWN'
-    best_type = 'UNKNOWN'
-    best_priority = 999
-    
-    for i, col in enumerate(columns):
-        if col not in row:
-            continue
-        
-        code_val = row.get(col)
-        if pd.isna(code_val) or (isinstance(code_val, str) and code_val.strip() == ''):
-            continue
-        
-        # For JSON, code might be nested
-        if is_json:
-            code, code_type = extract_code_from_value(code_val)
-            if not code:
-                code = str(code_val).strip() if code_val else None
-        else:
-            code = str(code_val).strip()
-            code_type = None
-        
-        if not code or code == 'nan':
-            continue
-        
-        # Get type from corresponding type column if not extracted
-        if not code_type and type_columns and i < len(type_columns):
-            type_col = type_columns[i]
-            if type_col and type_col in row:
-                code_type = str(row.get(type_col, 'UNKNOWN')).strip()
-        
-        code_type = code_type or 'UNKNOWN'
-        
-        # Validate CPT/HCPCS codes (must be 5 chars)
-        if code_type in ['CPT', 'HCPCS']:
-            if len(code) != 5:
-                code_type = 'Local'  # Downgrade invalid codes
-        
-        # Check priority
-        this_priority = priority_map.get(code_type, 999)
-        if this_priority < best_priority:
-            best_code = code
-            best_type = code_type
-            best_priority = this_priority
-    
-    # Auto-normalize code type based on format
-    if auto_normalize and len(best_code) == 5:
-        if best_code.isdigit():
-            best_type = 'CPT'
-        elif best_code[0].isalpha() and best_code[1:].isdigit():
-            best_type = 'HCPCS'
-    
-    return best_code, best_type
-
-
-def parse_json_value(val):
-    """
-    Try to parse a value that might be JSON (string or already parsed).
-    Returns the parsed value or original value.
-    """
-    if pd.isna(val):
-        return None
-    
-    # If it's already a dict/list, return as-is
-    if isinstance(val, (dict, list)):
-        return val
-    
-    # Try to parse as JSON string
-    val_str = str(val).strip()
-    if not val_str or val_str == 'nan':
-        return None
-    
-    # Check if it looks like JSON
-    if val_str.startswith('[') or val_str.startswith('{'):
-        try:
-            return json.loads(val_str)
-        except:
-            pass
-    
-    return val
-
-
-def extract_code_from_value(val):
-    """
-    Extract a code from a value that might be:
-    - A simple string/number
-    - A JSON object with 'code' key
-    - A JSON array with objects containing 'code'
-    """
-    parsed = parse_json_value(val)
-    
-    if parsed is None:
-        return None, None
-    
-    # If it's a dict, look for 'code' key
-    if isinstance(parsed, dict):
-        code = parsed.get('code') or parsed.get('code_value') or parsed.get('procedure_code')
-        code_type = parsed.get('code_type') or parsed.get('type') or parsed.get('codeType')
-        if code:
-            return str(code).strip(), str(code_type).strip() if code_type else None
-    
-    # If it's a list, try first element
-    if isinstance(parsed, list) and len(parsed) > 0:
-        first = parsed[0]
-        if isinstance(first, dict):
-            code = first.get('code') or first.get('code_value') or first.get('procedure_code')
-            code_type = first.get('code_type') or first.get('type') or first.get('codeType')
-            if code:
-                return str(code).strip(), str(code_type).strip() if code_type else None
-    
-    # If it's a simple string/number, return as-is
-    if isinstance(parsed, (str, int, float)):
-        return str(parsed).strip(), None
-    
-    return None, None
-
-
-def extract_setting(row, config, is_json=False):
-    """Extract the setting (inpatient/outpatient) from a row."""
-    setting_ext = config.get('setting_extraction', {})
-    
-    primary = setting_ext.get('primary', 'setting')
-    fallback = setting_ext.get('fallback', 'billing_class')
-    default = setting_ext.get('default', 'UNKNOWN')
-    
-    # Handle JSON format - setting might be nested in standard_charges
-    if is_json:
-        # First try top-level
-        if primary:
-            val = row.get(primary)
-            if val is not None and str(val).strip() and str(val) != 'nan':
-                return str(val).strip()
-        
-        # If not found, try inside standard_charges
-        if 'standard_charges' in row:
-            sc_val = row.get('standard_charges')
-            sc_parsed = parse_json_value(sc_val)
-            
-            if isinstance(sc_parsed, list) and len(sc_parsed) > 0:
-                charge_obj = sc_parsed[0]
-                if isinstance(charge_obj, dict):
-                    # Try primary, then fallback
-                    if primary:
-                        val = charge_obj.get(primary)
-                        if val is not None and str(val).strip():
-                            return str(val).strip()
-                    if fallback:
-                        val = charge_obj.get(fallback)
-                        if val is not None and str(val).strip():
-                            return str(val).strip()
-            elif isinstance(sc_parsed, dict):
-                # Try primary, then fallback
-                if primary:
-                    val = sc_parsed.get(primary)
-                    if val is not None and str(val).strip():
-                        return str(val).strip()
-                if fallback:
-                    val = sc_parsed.get(fallback)
-                    if val is not None and str(val).strip():
-                        return str(val).strip()
-    else:
-        # CSV format - direct column lookup
-        if primary and primary in row:
-            val = row.get(primary)
-            if not pd.isna(val) and str(val).strip():
-                return str(val).strip()
-        
-        # Try fallback
-        if fallback and fallback in row:
-            val = row.get(fallback)
-            if not pd.isna(val) and str(val).strip():
-                return str(val).strip()
-    
-    return default
+# extract_code and extract_setting are now imported from extractors.py
+# Note: The shared extractors.py functions handle all the logic needed
 
 
 def sanitize_filename(name):
@@ -346,34 +152,7 @@ def find_data_file(hospital_name):
     return None
 
 
-def find_correct_header_row(csv_file, expected_columns, encoding='utf-8', max_try=5):
-    """
-    Try different header rows to find one that contains the expected columns.
-    Returns (header_row_index, found_columns_count) or (None, 0) if not found.
-    """
-    for header_row in range(max_try):
-        try:
-            df = pd.read_csv(csv_file, header=header_row, nrows=1, dtype=str, encoding=encoding)
-            found_count = sum(1 for col in expected_columns if col in df.columns)
-            if found_count > 0:
-                return header_row, found_count
-        except:
-            continue
-    
-    # Try with different encoding
-    try:
-        for header_row in range(max_try):
-            try:
-                df = pd.read_csv(csv_file, header=header_row, nrows=1, dtype=str, encoding='iso-8859-1')
-                found_count = sum(1 for col in expected_columns if col in df.columns)
-                if found_count > 0:
-                    return header_row, found_count
-            except:
-                continue
-    except:
-        pass
-    
-    return None, 0
+# Header row fallback logic removed - Phase 2 should detect header_row correctly
 
 
 def delete_hospital_data(session, hospital_id):
@@ -457,6 +236,8 @@ def ingest_csv_tall(df, config, hospital_id, session, skip_rules):
             payer_col = price_ext.get('payer_column', 'payer_name')
             plan_col = price_ext.get('plan_column', 'plan_name')
             price_col = price_ext.get('price_column', 'standard_charge|negotiated_dollar')
+            percentage_col = price_ext.get('percentage_column', 'standard_charge|negotiated_percentage')
+            methodology_col = price_ext.get('methodology_column', 'standard_charge|methodology')
             
             payer = row.get(payer_col) if payer_col else None
             plan = row.get(plan_col) if plan_col else None
@@ -467,7 +248,37 @@ def ingest_csv_tall(df, config, hospital_id, session, skip_rules):
                 
                 price_val, price_note = parse_price(row.get(price_col), skip_rules)
                 
-                # Check sibling columns if no price
+                # If no dollar amount, check for percentage-based pricing
+                if price_val is None and price_note is None:
+                    percentage_val = None
+                    methodology_val = None
+                    
+                    # Check for percentage column
+                    if percentage_col and percentage_col in row and not pd.isna(row.get(percentage_col)):
+                        pct_str = str(row.get(percentage_col)).strip()
+                        if pct_str and pct_str != 'nan':
+                            try:
+                                percentage_val = float(pct_str)
+                            except:
+                                percentage_val = pct_str  # Keep as string if not numeric
+                    
+                    # Check for methodology column
+                    if methodology_col and methodology_col in row and not pd.isna(row.get(methodology_col)):
+                        meth_str = str(row.get(methodology_col)).strip()
+                        if meth_str and meth_str != 'nan':
+                            methodology_val = meth_str
+                    
+                    # If we have percentage, create a note
+                    if percentage_val is not None:
+                        if isinstance(percentage_val, float):
+                            price_note = f"PERCENTAGE: {percentage_val}%"
+                        else:
+                            price_note = f"PERCENTAGE: {percentage_val}"
+                        
+                        if methodology_val:
+                            price_note += f" ({methodology_val})"
+                
+                # Check sibling columns if still no price/note
                 if price_val is None and price_note is None:
                     for sibling in price_ext.get('sibling_columns', []):
                         sibling_col = price_col.rsplit('|', 1)[0] + '|' + sibling if '|' in price_col else sibling
@@ -714,10 +525,28 @@ def ingest_json(data, config, hospital_id, session, skip_rules):
                                     plan_name = payer_obj.get('plan_name') or payer_obj.get('plan')
                                     estimated = payer_obj.get('estimated_amount') or payer_obj.get('negotiated_dollar')
                                     
-                                    if payer_name and estimated is not None:
+                                    if payer_name:
                                         payer_name = str(payer_name).strip()
                                         plan_name = str(plan_name).strip() if plan_name else None
-                                        price_val, price_note = parse_price(estimated, skip_rules)
+                                        
+                                        # Try to extract dollar amount first
+                                        price_val, price_note = parse_price(estimated, skip_rules) if estimated is not None else (None, None)
+                                        
+                                        # If no dollar amount, check for percentage-based pricing
+                                        if price_val is None and price_note is None:
+                                            percentage = payer_obj.get('negotiated_percentage') or payer_obj.get('percentage')
+                                            methodology = payer_obj.get('methodology') or payer_obj.get('methodology_type')
+                                            
+                                            if percentage is not None:
+                                                pct_str = str(percentage).strip()
+                                                try:
+                                                    pct_float = float(pct_str)
+                                                    price_note = f"PERCENTAGE: {pct_float}%"
+                                                except:
+                                                    price_note = f"PERCENTAGE: {pct_str}"
+                                                
+                                                if methodology:
+                                                    price_note += f" ({str(methodology).strip()})"
                                         
                                         # Add notes from payer object if available
                                         additional_notes = payer_obj.get('additional_payer_notes')
@@ -808,10 +637,28 @@ def ingest_json(data, config, hospital_id, session, skip_rules):
                                 plan_name = payer_obj.get('plan_name') or payer_obj.get('plan')
                                 estimated = payer_obj.get('estimated_amount') or payer_obj.get('negotiated_dollar')
                                 
-                                if payer_name and estimated is not None:
+                                if payer_name:
                                     payer_name = str(payer_name).strip()
                                     plan_name = str(plan_name).strip() if plan_name else None
-                                    price_val, price_note = parse_price(estimated, skip_rules)
+                                    
+                                    # Try to extract dollar amount first
+                                    price_val, price_note = parse_price(estimated, skip_rules) if estimated is not None else (None, None)
+                                    
+                                    # If no dollar amount, check for percentage-based pricing
+                                    if price_val is None and price_note is None:
+                                        percentage = payer_obj.get('negotiated_percentage') or payer_obj.get('percentage')
+                                        methodology = payer_obj.get('methodology') or payer_obj.get('methodology_type')
+                                        
+                                        if percentage is not None:
+                                            pct_str = str(percentage).strip()
+                                            try:
+                                                pct_float = float(pct_str)
+                                                price_note = f"PERCENTAGE: {pct_float}%"
+                                            except:
+                                                price_note = f"PERCENTAGE: {pct_str}"
+                                            
+                                            if methodology:
+                                                price_note += f" ({str(methodology).strip()})"
                                     
                                     # Add notes from payer object if available
                                     additional_notes = payer_obj.get('additional_payer_notes')
@@ -871,37 +718,9 @@ def ingest_hospital(hospital_id, config, manifest_info, session):
     try:
         if data_file.suffix.lower() == '.csv':
             # Build list of expected columns for validation
-            expected_columns = []
-            code_ext = config.get('code_extraction', {})
-            code_cols = code_ext.get('columns', [])
-            if code_cols:
-                expected_columns.extend(code_cols)
-            else:
-                code_col = config.get('code_column')
-                if code_col:
-                    expected_columns.append(code_col)
-            
-            desc_col = config.get('description_column', 'description')
-            expected_columns.append(desc_col)
-            
-            # Safety check: verify header row works
+            # Load CSV with header row from config (Phase 2 should have detected it correctly)
             try:
-                df_test = pd.read_csv(data_file, header=header_row, nrows=1, dtype=str, encoding=encoding)
-                found_count = sum(1 for col in expected_columns if col in df_test.columns) if expected_columns else 1
-            except:
-                found_count = 0
-            
-            # Auto-detect header row if expected columns not found
-            actual_header_row = header_row
-            if found_count == 0 and expected_columns:
-                detected_row, detected_count = find_correct_header_row(data_file, expected_columns, encoding)
-                if detected_row is not None and detected_count > found_count:
-                    actual_header_row = detected_row
-                    print(f"  ⚠️  Header row corrected: {header_row} → {actual_header_row} (expected columns not found)")
-            
-            # Load CSV with (possibly corrected) header row
-            try:
-                df = pd.read_csv(data_file, header=actual_header_row, dtype=str, encoding=encoding)
+                df = pd.read_csv(data_file, header=header_row, dtype=str, encoding=encoding)
             except UnicodeDecodeError:
                 df = pd.read_csv(data_file, header=actual_header_row, dtype=str, encoding='iso-8859-1')
             
