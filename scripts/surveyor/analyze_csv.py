@@ -24,6 +24,9 @@ from pathlib import Path
 from datetime import datetime
 from collections import Counter
 import statistics
+import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # Configuration
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
@@ -33,9 +36,10 @@ MANIFEST_FILE = DOWNLOADS_DIR / "download_manifest.json"
 ANALYSIS_MANIFEST = PROFILES_DIR / "analysis_manifest.json"
 
 # Sample size for very large files (rows to analyze)
-MAX_ROWS_TO_ANALYZE = 50000  # Analyze up to 50K rows
+# Note: No row/record limits - we process entire files using chunked/batched processing
 SAMPLE_SIZE = 10  # Number of sample values to store
-MAX_JSON_RECORDS = 10000  # Analyze up to 10K records for JSON
+CHUNK_SIZE = 10000  # Process CSV files in chunks of 10K rows (for memory efficiency)
+JSON_BATCH_SIZE = 10000  # Process JSON records in batches of 10K (for memory efficiency, but processes ALL records)
 
 
 def format_number(value, default="N/A"):
@@ -45,6 +49,12 @@ def format_number(value, default="N/A"):
     if isinstance(value, (int, float)):
         return f"{value:,}"
     return str(value)
+
+
+def sanitize_filename(name):
+    """Create a safe directory/file name (matches download_all.py)."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    return safe[:100]  # Limit length
 
 
 def extract_zip_file(zip_path):
@@ -127,18 +137,26 @@ def save_analysis_manifest(manifest):
 
 
 def detect_encoding(file_path):
-    """Detect file encoding by trying common encodings."""
-    encodings = ['utf-8', 'utf-8-sig', 'iso-8859-1', 'cp1252', 'latin1']
+    """
+    Detect file encoding by trying to decode the ENTIRE file.
+    This ensures we catch encoding issues anywhere in the file, not just the beginning.
+    """
+    # Read entire file as binary (fast - ~0.05s for 55MB file)
+    with open(file_path, 'rb') as f:
+        data = f.read()
+    
+    # Try common encodings in order of likelihood
+    encodings = ['utf-8', 'iso-8859-1', 'cp1252', 'latin1', 'utf-8-sig']
     
     for encoding in encodings:
         try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                f.read(10000)  # Try reading first 10KB
-            return encoding
+            data.decode(encoding)
+            return encoding  # First encoding that successfully decodes entire file
         except (UnicodeDecodeError, UnicodeError):
             continue
     
-    return 'utf-8'  # Default fallback
+    # If all fail, return utf-8 (will use encoding_errors='replace' in pandas as last resort)
+    return 'utf-8'
 
 
 def detect_header_row(rows, max_check=10):
@@ -337,10 +355,13 @@ def analyze_column(values, column_name):
     # Check for description, but exclude columns that are clearly payer-related
     elif any(k in col_lower for k in ['desc', 'procedure', 'service']) or ('name' in col_lower and 'payer' not in col_lower and 'plan' not in col_lower):
         inferred_purpose = "description"
-    elif any(k in col_lower for k in ['charge', 'price', 'amount', 'rate', 'dollar', 'cost']):
-        inferred_purpose = "price"
+    # Check for category/setting indicators BEFORE price (to catch "COST CENTER", "DEPARTMENT", etc.)
+    elif any(k in col_lower for k in ['center', 'department', 'location']) or 'cost center' in col_lower:
+        inferred_purpose = "category"
     elif any(k in col_lower for k in ['type', 'class', 'category', 'setting']):
         inferred_purpose = "category"
+    elif any(k in col_lower for k in ['charge', 'price', 'amount', 'rate', 'dollar', 'cost']):
+        inferred_purpose = "price"
     elif any(k in col_lower for k in ['note', 'comment', 'additional', 'modifier']):
         inferred_purpose = "notes"
     elif any(k in col_lower for k in ['gross', 'cash', 'discounted']):
@@ -417,24 +438,36 @@ def generate_config_template(profile, hospital_name=None):
     
     for col in all_code_like_cols:
         col_str = str(col)
+        # Normalize spaces around pipes for consistent matching
+        # "code | 1 | type" → "code|1|type" (handles spaces in column names)
+        col_normalized = '|'.join(part.strip() for part in col_str.split('|'))
+        
         # Check if column name suggests it's a type column
-        if '|type' in col_str.lower() or col_str.endswith('|type') or col_str.endswith('_type'):
+        # Check both normalized and original (for _type suffix)
+        if '|type' in col_normalized.lower() or col_normalized.endswith('|type') or col_str.endswith('_type'):
             type_only_columns.append(col)
         else:
             code_only_columns.append(col)
     
     # Match type columns to code columns by name pattern
     # e.g., 'code|1' -> 'code|1|type', 'code|2' -> 'code|2|type'
+    # Normalize spaces around pipes for matching
     matched_type_columns = []
     if code_only_columns and type_only_columns:
         for code_col in code_only_columns:
             code_col_str = str(code_col)
+            code_col_normalized = '|'.join(part.strip() for part in code_col_str.split('|'))
             # Try to find matching type column
             matching_type = None
             for type_col in type_only_columns:
                 type_col_str = str(type_col)
+                type_col_normalized = '|'.join(part.strip() for part in type_col_str.split('|'))
                 # Check if type column matches (e.g., 'code|1|type' matches 'code|1')
-                if code_col_str in type_col_str or type_col_str.startswith(code_col_str.split('|')[0]):
+                # Check both normalized and original strings
+                if (code_col_normalized in type_col_normalized or 
+                    type_col_normalized.startswith(code_col_normalized.split('|')[0]) or
+                    code_col_str in type_col_str or 
+                    type_col_str.startswith(code_col_str.split('|')[0])):
                     matching_type = type_col
                     break
             matched_type_columns.append(matching_type)
@@ -459,8 +492,9 @@ def generate_config_template(profile, hospital_name=None):
     description_column = detected_patterns.get("description_column")
     payer_style = detected_patterns.get("payer_style")
     payer_column = detected_patterns.get("payer_column")
-    setting_primary = detected_patterns.get("setting_primary", "setting")
-    setting_fallback = detected_patterns.get("setting_fallback", "billing_class")
+    # Ensure setting_primary is never None (use "setting" as default)
+    setting_primary = detected_patterns.get("setting_primary") or "setting"
+    setting_fallback = detected_patterns.get("setting_fallback") or "billing_class"
     
     # Find notes column
     notes_column = None
@@ -505,7 +539,8 @@ def generate_config_template(profile, hospital_name=None):
 
 def analyze_csv_file(file_path):
     """
-    Analyze a CSV file and return a comprehensive profile.
+    Analyze a CSV or Excel file and return a comprehensive profile.
+    Supports: CSV, XLSX, XLS files
     """
     profile = {
         "file_path": str(file_path),
@@ -525,69 +560,152 @@ def analyze_csv_file(file_path):
     }
     
     try:
-        # Detect encoding
-        encoding = detect_encoding(file_path)
-        profile["encoding"] = encoding
+        # Detect file type
+        file_ext = file_path.suffix.lower()
+        is_excel = file_ext in ['.xlsx', '.xls']
         
-        # Read file
-        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
-            # First, read some rows to detect header
-            reader = csv.reader(f)
-            first_rows = []
-            for i, row in enumerate(reader):
-                first_rows.append(row)
-                if i >= 15:  # Read first 16 rows for header detection
-                    break
-            
-            # Detect header row
-            header_row_idx = detect_header_row(first_rows)
-            profile["header_row"] = header_row_idx
-            
-            if header_row_idx >= len(first_rows):
-                profile["errors"].append("Could not detect header row")
-                return profile
-            
-            columns = first_rows[header_row_idx]
-            profile["columns"] = columns
-            profile["total_columns"] = len(columns)
-            
-            # Reset file and skip to data
-            f.seek(0)
-            reader = csv.reader(f)
-            
-            # Skip to header
-            for _ in range(header_row_idx + 1):
-                next(reader, None)
-            
-            # Read data rows (up to MAX_ROWS_TO_ANALYZE)
-            data_rows = []
-            row_count = 0
-            
-            for row in reader:
-                if row_count >= MAX_ROWS_TO_ANALYZE:
-                    break
-                data_rows.append(row)
-                row_count += 1
-            
-            profile["total_rows"] = row_count
-            
-            if row_count >= MAX_ROWS_TO_ANALYZE:
-                profile["warnings"].append(f"File truncated for analysis (analyzed {MAX_ROWS_TO_ANALYZE} rows)")
+        # Detect encoding (only for CSV files)
+        encoding = None
+        if not is_excel:
+            encoding = detect_encoding(file_path)
+            profile["encoding"] = encoding
         
-        # Analyze each column
+        # Read first rows to detect header (different approach for CSV vs Excel)
+        if is_excel:
+            # For Excel: read first 16 rows using pandas
+            df_preview = pd.read_excel(file_path, header=None, nrows=16)
+            first_rows = df_preview.values.tolist()
+        else:
+            # For CSV: read first rows using csv.reader
+            with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+                reader = csv.reader(f)
+                first_rows = []
+                for i, row in enumerate(reader):
+                    first_rows.append(row)
+                    if i >= 15:  # Read first 16 rows for header detection
+                        break
+        
+        # Detect header row
+        header_row_idx = detect_header_row(first_rows)
+        profile["header_row"] = header_row_idx
+        
+        if header_row_idx >= len(first_rows):
+            profile["errors"].append("Could not detect header row")
+            return profile
+        
+        columns = [str(c) for c in first_rows[header_row_idx]]  # Convert to strings
+        profile["columns"] = columns
+        profile["total_columns"] = len(columns)
+        
+        # Process entire file in chunks using pandas (matches preview_cards.py approach)
+        # This allows us to analyze all rows without loading everything into memory
+        print(f"    Processing entire file in chunks of {CHUNK_SIZE:,} rows...")
+        
+        # Initialize column value collectors (we'll aggregate across chunks)
+        column_value_collectors = {col_idx: [] for col_idx in range(len(columns))}
+        total_rows = 0
+        
+        try:
+            # Use pandas chunked reader (supports both CSV and Excel)
+            if is_excel:
+                # Excel files: read in chunks (pandas doesn't support chunksize for Excel, so we'll read all)
+                # For very large Excel files, we'll need to read all at once (Excel format limitation)
+                df_full = pd.read_excel(file_path, header=header_row_idx, dtype=str)
+                total_rows = len(df_full)
+                
+                # Process in chunks manually for consistency
+                for chunk_start in range(0, total_rows, CHUNK_SIZE):
+                    chunk_end = min(chunk_start + CHUNK_SIZE, total_rows)
+                    df_chunk = df_full.iloc[chunk_start:chunk_end]
+                    
+                    # Collect values for each column from this chunk
+                    for col_idx, col_name in enumerate(columns):
+                        if col_name in df_chunk.columns:
+                            col_values_chunk = df_chunk[col_name].fillna('').astype(str).tolist()
+                            column_value_collectors[col_idx].extend(col_values_chunk)
+                        else:
+                            column_value_collectors[col_idx].extend([None] * len(df_chunk))
+                    
+                    # Progress indicator
+                    if chunk_end % (CHUNK_SIZE * 10) == 0:
+                        print(f"      Processed {chunk_end:,} of {total_rows:,} rows...")
+            else:
+                # CSV files: use pandas chunked reader
+                chunk_reader = pd.read_csv(
+                    file_path,
+                    header=header_row_idx,
+                    dtype=str,
+                    encoding=encoding,
+                    chunksize=CHUNK_SIZE,
+                    on_bad_lines='skip'  # Skip malformed rows
+                )
+                
+                for chunk_idx, df_chunk in enumerate(chunk_reader):
+                    chunk_rows = len(df_chunk)
+                    total_rows += chunk_rows
+                    
+                    # Collect values for each column from this chunk
+                    for col_idx, col_name in enumerate(columns):
+                        if col_name in df_chunk.columns:
+                            # Get all values from this column in this chunk
+                            col_values_chunk = df_chunk[col_name].fillna('').astype(str).tolist()
+                            column_value_collectors[col_idx].extend(col_values_chunk)
+                        else:
+                            # Column missing in this chunk - add None values
+                            column_value_collectors[col_idx].extend([None] * chunk_rows)
+                    
+                    # Progress indicator for very large files
+                    if chunk_idx % 10 == 0 and chunk_idx > 0:
+                        print(f"      Processed {total_rows:,} rows...")
+            
+            profile["total_rows"] = total_rows
+            
+        except Exception as e:
+            # Fallback to csv.reader if pandas fails
+            print(f"    Warning: Pandas chunked reading failed ({e}), falling back to csv.reader...")
+            # Open new file handle (the previous 'f' was closed when 'with' block ended)
+            with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+                reader = csv.reader(f)
+                
+                # Skip to header
+                for _ in range(header_row_idx + 1):
+                    next(reader, None)
+                
+                # Read all data rows
+                data_rows = []
+                row_count = 0
+                
+                for row in reader:
+                    data_rows.append(row)
+                    row_count += 1
+                    # Progress indicator every 100k rows
+                    if row_count % 100000 == 0:
+                        print(f"      Processed {row_count:,} rows...")
+                
+                profile["total_rows"] = row_count
+                
+                # Collect column values from csv.reader data
+                for col_idx, col_name in enumerate(columns):
+                    col_values = []
+                    for row in data_rows:
+                        if col_idx < len(row):
+                            col_values.append(row[col_idx])
+                        else:
+                            col_values.append(None)
+                    column_value_collectors[col_idx] = col_values
+        
+        # Analyze each column using collected values
         for col_idx, col_name in enumerate(columns):
-            col_values = []
-            for row in data_rows:
-                if col_idx < len(row):
-                    col_values.append(row[col_idx])
-                else:
-                    col_values.append(None)
-            
+            col_values = column_value_collectors[col_idx]
             col_analysis = analyze_column(col_values, col_name)
             profile["column_analyses"].append(col_analysis)
         
-        # Detect format type
-        profile["format_type"] = detect_format_type(columns, profile["column_analyses"])
+        # Detect format type (always set, even if analysis failed partially)
+        if profile["column_analyses"]:
+            profile["format_type"] = detect_format_type(columns, profile["column_analyses"])
+        else:
+            # Fallback if no column analyses available
+            profile["format_type"] = "tall"  # Default assumption
         
         # Identify key columns
         code_columns = [a["column_name"] for a in profile["column_analyses"] 
@@ -795,14 +913,12 @@ def analyze_json_file(file_path):
             profile["errors"].append("Unexpected JSON structure (not object or array)")
             return profile
         
-        # Analyze the records structure
+        # Analyze the records structure - process ALL records (no limit)
         if records and len(records) > 0:
-            # Sample records for analysis (up to MAX_JSON_RECORDS)
-            sample_count = min(len(records), MAX_JSON_RECORDS)
-            sample_records = records[:sample_count]
+            total_records = len(records)
+            profile["total_records"] = total_records
             
-            if sample_count < len(records):
-                profile["warnings"].append(f"Analyzed {sample_count:,} of {len(records):,} records")
+            print(f"    Processing {total_records:,} JSON records...")
             
             # Store sample record
             first_record = records[0]
@@ -813,26 +929,46 @@ def analyze_json_file(file_path):
             
             # Analyze record structure
             if isinstance(first_record, dict):
-                # Get all unique keys across sample records
+                # Get all unique keys across ALL records (check first 1000 for efficiency, then sample rest)
                 all_keys = set()
-                for record in sample_records[:1000]:  # Check first 1000 for keys
+                # Check first 1000 records for keys
+                for record in records[:1000]:
                     if isinstance(record, dict):
                         all_keys.update(record.keys())
+                
+                # Sample additional records to catch keys that appear later
+                if total_records > 1000:
+                    # Sample from middle and end
+                    step = max(1, total_records // 1000)
+                    for i in range(1000, total_records, step):
+                        if isinstance(records[i], dict):
+                            all_keys.update(records[i].keys())
                 
                 profile["columns"] = list(all_keys)
                 profile["total_columns"] = len(all_keys)
                 
-                # Analyze each "column" (key)
+                # Analyze each "column" (key) - process ALL records in batches for memory efficiency
                 for key in all_keys:
                     values = []
-                    for record in sample_records:
-                        if isinstance(record, dict):
-                            val = record.get(key)
-                            # Flatten nested structures for analysis
-                            if isinstance(val, (list, dict)):
-                                values.append(str(val)[:100])  # Truncate complex values
+                    # Process in batches to avoid memory issues
+                    for batch_start in range(0, total_records, JSON_BATCH_SIZE):
+                        batch_end = min(batch_start + JSON_BATCH_SIZE, total_records)
+                        batch_records = records[batch_start:batch_end]
+                        
+                        for record in batch_records:
+                            if isinstance(record, dict):
+                                val = record.get(key)
+                                # Flatten nested structures for analysis
+                                if isinstance(val, (list, dict)):
+                                    values.append(str(val)[:100])  # Truncate complex values
+                                else:
+                                    values.append(val)
                             else:
-                                values.append(val)
+                                values.append(None)
+                        
+                        # Progress indicator for very large files
+                        if batch_end % (JSON_BATCH_SIZE * 10) == 0:
+                            print(f"      Processed {batch_end:,} of {total_records:,} records for column analysis...")
                     
                     col_analysis = analyze_column(values, key)
                     profile["column_analyses"].append(col_analysis)
@@ -881,20 +1017,25 @@ def analyze_json_file(file_path):
     return profile
 
 
-def process_hospital(hospital_id, download_info, analysis_manifest):
+def process_hospital_worker(args):
+    """
+    Worker function for parallel processing.
+    Takes (hospital_id, download_info) tuple and returns (hospital_id, status, manifest_update).
+    """
+    hospital_id, download_info = args
+    return process_hospital(hospital_id, download_info)
+
+
+def process_hospital(hospital_id, download_info):
     """
     Process a single hospital's downloaded file.
-    Returns status string.
+    Returns (status, manifest_update_dict) where manifest_update_dict contains the entry to add to analysis_manifest["analyses"].
     """
     hospital_name = download_info.get("name", "Unknown")
     file_path = download_info.get("file_path")
     file_type = download_info.get("file_type", "csv")
     
-    # Check if already analyzed
-    if hospital_id in analysis_manifest["analyses"]:
-        status = analysis_manifest["analyses"][hospital_id].get("status")
-        if status == "completed":
-            return "skipped"
+    # Note: We don't check if already analyzed here - that's done in main() before submitting to workers
     
     print(f"\n{'='*60}")
     print(f"Analyzing: {hospital_name}")
@@ -903,12 +1044,12 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
     
     if not file_path or not Path(file_path).exists():
         print("  ⚠️  File not found")
-        analysis_manifest["analyses"][hospital_id] = {
+        manifest_update = {
             "name": hospital_name,
             "status": "file_not_found",
             "timestamp": datetime.now().isoformat()
         }
-        return "failed"
+        return ("failed", manifest_update)
     
     file_path = Path(file_path)
     actual_file_type = file_type
@@ -920,13 +1061,13 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
         
         if not data_files:
             print("  ⚠️  No data files found in ZIP")
-            analysis_manifest["analyses"][hospital_id] = {
+            manifest_update = {
                 "name": hospital_name,
                 "status": "empty_zip",
                 "file_type": file_type,
                 "timestamp": datetime.now().isoformat()
             }
-            return "failed"
+            return ("failed", manifest_update)
         
         # Use the first (or largest) data file
         data_files.sort(key=lambda x: x.stat().st_size, reverse=True)
@@ -937,8 +1078,9 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
     # Analyze based on file type
     try:
         if actual_file_type in ["csv", "xlsx", "xls"]:
-            print("  📊 Analyzing CSV structure...")
-            profile = analyze_csv_file(file_path)
+            file_type_label = "Excel" if actual_file_type in ["xlsx", "xls"] else "CSV"
+            print(f"  📊 Analyzing {file_type_label} structure...")
+            profile = analyze_csv_file(file_path)  # Handles both CSV and Excel
             # Add hospital name to profile for config template generation
             profile["hospital_name"] = hospital_name
         elif actual_file_type == "json":
@@ -948,16 +1090,17 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
             profile["hospital_name"] = hospital_name
         else:
             print(f"  ⚠️  Unsupported file type: {actual_file_type}")
-            analysis_manifest["analyses"][hospital_id] = {
+            manifest_update = {
                 "name": hospital_name,
                 "status": "unsupported_type",
                 "file_type": actual_file_type,
                 "timestamp": datetime.now().isoformat()
             }
-            return "failed"
+            return ("failed", manifest_update)
         
-        # Save profile
-        profile_file = PROFILES_DIR / f"{hospital_id}.json"
+        # Save profile with sanitized hospital name (matching downloads folder)
+        safe_name = sanitize_filename(hospital_name)
+        profile_file = PROFILES_DIR / f"{safe_name}.json"
         with open(profile_file, 'w') as f:
             json.dump(profile, f, indent=2, default=str)
         
@@ -965,9 +1108,10 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
         total_rows = profile.get("total_rows") or profile.get("total_records") or 0
         total_cols = profile.get("total_columns") or 0
         
-        # Update manifest
-        analysis_manifest["analyses"][hospital_id] = {
+        # Create manifest update
+        manifest_update = {
             "name": hospital_name,
+            "sanitized_name": safe_name,  # Store for file lookup
             "status": "completed",
             "profile_file": str(profile_file),
             "file_type": actual_file_type,
@@ -1002,17 +1146,17 @@ def process_hospital(hospital_id, download_info, analysis_manifest):
         if profile.get("errors"):
             print(f"     ❌ Errors: {len(profile['errors'])}")
         
-        return "completed"
+        return ("completed", manifest_update)
         
     except Exception as e:
         print(f"  ❌ Analysis failed: {str(e)}")
-        analysis_manifest["analyses"][hospital_id] = {
+        manifest_update = {
             "name": hospital_name,
             "status": "failed",
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
-        return "failed"
+        return ("failed", manifest_update)
 
 
 def main():
@@ -1045,20 +1189,74 @@ def main():
     print(f"Already analyzed: {already_done}")
     print(f"Remaining: {len(completed_downloads) - already_done}")
     
-    # Process each hospital
+    # Filter out already completed hospitals
+    hospitals_to_process = []
+    hospital_info_map = {}  # Map hospital_id -> download_info for error handling
+    for hospital_id, download_info in completed_downloads.items():
+        hospital_info_map[hospital_id] = download_info
+        if hospital_id not in analysis_manifest["analyses"]:
+            hospitals_to_process.append((hospital_id, download_info))
+        else:
+            status = analysis_manifest["analyses"][hospital_id].get("status")
+            if status == "completed":
+                # Already done, skip
+                continue
+            else:
+                # Retry failed/skipped hospitals
+                hospitals_to_process.append((hospital_id, download_info))
+    
+    if not hospitals_to_process:
+        print("\n✅ All hospitals already analyzed!")
+        return
+    
+    # Process hospitals in parallel
     stats = {"completed": 0, "failed": 0, "skipped": 0}
+    total_to_process = len(hospitals_to_process)
+    skipped_count = len(completed_downloads) - total_to_process
+    
+    print(f"\nProcessing {total_to_process} hospitals...")
+    num_workers = min(8, multiprocessing.cpu_count())  # Use 8 workers or CPU count, whichever is less
+    print(f"Using parallel processing with {num_workers} workers...")
     
     try:
-        for i, (hospital_id, download_info) in enumerate(completed_downloads.items()):
-            print(f"\n[{i+1}/{len(completed_downloads)}]", end="")
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            future_to_hospital = {
+                executor.submit(process_hospital_worker, (hospital_id, download_info)): hospital_id
+                for hospital_id, download_info in hospitals_to_process
+            }
             
-            status = process_hospital(hospital_id, download_info, analysis_manifest)
-            stats[status] = stats.get(status, 0) + 1
-            
-            # Save manifest periodically
-            if (i + 1) % 10 == 0:
-                analysis_manifest["stats"] = stats
-                save_analysis_manifest(analysis_manifest)
+            # Process completed tasks as they finish
+            completed_count = 0
+            for future in as_completed(future_to_hospital):
+                hospital_id = future_to_hospital[future]
+                completed_count += 1
+                
+                try:
+                    status, manifest_update = future.result()
+                    stats[status] = stats.get(status, 0) + 1
+                    
+                    # Update manifest with result
+                    analysis_manifest["analyses"][hospital_id] = manifest_update
+                    
+                    # Progress update every 5 completions
+                    if completed_count % 5 == 0 or completed_count == total_to_process:
+                        print(f"  [{completed_count}/{total_to_process}] Completed processing...")
+                        # Save manifest periodically
+                        analysis_manifest["stats"] = stats
+                        save_analysis_manifest(analysis_manifest)
+                        
+                except Exception as e:
+                    print(f"  ⚠️  Error processing {hospital_id}: {e}")
+                    stats["failed"] = stats.get("failed", 0) + 1
+                    # Add error entry to manifest
+                    download_info = hospital_info_map.get(hospital_id, {})
+                    analysis_manifest["analyses"][hospital_id] = {
+                        "name": download_info.get("name", "Unknown"),
+                        "status": "failed",
+                        "error": str(e),
+                        "timestamp": datetime.now().isoformat()
+                    }
                 
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user. Progress saved.")
@@ -1073,7 +1271,7 @@ def main():
     print("=" * 60)
     print(f"  Total Files: {len(completed_downloads)}")
     print(f"  ✅ Completed: {stats.get('completed', 0)}")
-    print(f"  ⏭️  Skipped (already done): {stats.get('skipped', 0)}")
+    print(f"  ⏭️  Skipped (already done): {skipped_count}")
     print(f"  ❌ Failed: {stats.get('failed', 0)}")
     print(f"\n  Profiles saved to: {PROFILES_DIR}")
     print(f"  Manifest saved to: {ANALYSIS_MANIFEST}")

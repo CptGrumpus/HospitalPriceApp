@@ -70,7 +70,17 @@ def save_config_manifest(manifest):
 
 def load_config(hospital_id):
     """Load a hospital's config file."""
-    config_file = CONFIGS_DIR / f"{hospital_id}.json"
+    # Get sanitized name from config manifest
+    manifest = load_config_manifest()
+    config_info = manifest.get("configs", {}).get(hospital_id, {})
+    sanitized_name = config_info.get("sanitized_name")
+    
+    if sanitized_name:
+        config_file = CONFIGS_DIR / f"{sanitized_name}.json"
+    else:
+        # Fallback: try hospital_id (for backward compatibility)
+        config_file = CONFIGS_DIR / f"{hospital_id}.json"
+    
     if not config_file.exists():
         return None
     with open(config_file, 'r') as f:
@@ -137,17 +147,17 @@ def find_data_file(hospital_name):
     if not hospital_dir.exists():
         return None
     
-    # Check extracted folder first (for ZIPs)
-    extracted_dir = hospital_dir / "extracted"
-    if extracted_dir.exists():
-        for f in sorted(extracted_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
-            if f.suffix.lower() in ['.csv', '.json']:
+        # Check extracted folder first (for ZIPs)
+        extracted_dir = hospital_dir / "extracted"
+        if extracted_dir.exists():
+            for f in sorted(extracted_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
+                if f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
+                    return f
+        
+        # Check main folder
+        for f in sorted(hospital_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
+            if f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
                 return f
-    
-    # Check main folder
-    for f in sorted(hospital_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
-        if f.suffix.lower() in ['.csv', '.json']:
-            return f
     
     return None
 
@@ -716,13 +726,16 @@ def ingest_hospital(hospital_id, config, manifest_info, session):
         print(f"  🗑️  Deleted {deleted} existing items")
     
     try:
-        if data_file.suffix.lower() == '.csv':
+        file_ext = data_file.suffix.lower()
+        is_excel = file_ext in ['.xlsx', '.xls']
+        
+        if file_ext == '.csv' or is_excel:
             # Build list of expected columns for validation
-            # Load CSV with header row from config (Phase 2 should have detected it correctly)
-            try:
+            # Load CSV/Excel with header row from config (Phase 2 should have detected encoding correctly)
+            if is_excel:
+                df = pd.read_excel(data_file, header=header_row, dtype=str)
+            else:
                 df = pd.read_csv(data_file, header=header_row, dtype=str, encoding=encoding)
-            except UnicodeDecodeError:
-                df = pd.read_csv(data_file, header=actual_header_row, dtype=str, encoding='iso-8859-1')
             
             print(f"  Loaded {len(df):,} rows")
             

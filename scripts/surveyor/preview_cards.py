@@ -68,7 +68,17 @@ def save_config_manifest(manifest):
 
 def load_config(hospital_id):
     """Load a hospital's config file."""
-    config_file = CONFIGS_DIR / f"{hospital_id}.json"
+    # Get sanitized name from config manifest
+    manifest = load_config_manifest()
+    config_info = manifest.get("configs", {}).get(hospital_id, {})
+    sanitized_name = config_info.get("sanitized_name")
+    
+    if sanitized_name:
+        config_file = CONFIGS_DIR / f"{sanitized_name}.json"
+    else:
+        # Fallback: try hospital_id (for backward compatibility)
+        config_file = CONFIGS_DIR / f"{hospital_id}.json"
+    
     if not config_file.exists():
         return None
     with open(config_file, 'r') as f:
@@ -77,7 +87,25 @@ def load_config(hospital_id):
 
 def load_profile(hospital_id):
     """Load a hospital's analysis profile."""
-    profile_file = PROFILES_DIR / f"{hospital_id}.json"
+    # Get sanitized name from analysis manifest
+    from pathlib import Path
+    ANALYSIS_MANIFEST = Path(__file__).parent.parent.parent / "data" / "profiles" / "analysis_manifest.json"
+    
+    if ANALYSIS_MANIFEST.exists():
+        with open(ANALYSIS_MANIFEST, 'r') as f:
+            analysis_manifest = json.load(f)
+            analysis_info = analysis_manifest.get("analyses", {}).get(hospital_id, {})
+            sanitized_name = analysis_info.get("sanitized_name")
+            
+            if sanitized_name:
+                profile_file = PROFILES_DIR / f"{sanitized_name}.json"
+            else:
+                # Fallback: try hospital_id (for backward compatibility)
+                profile_file = PROFILES_DIR / f"{hospital_id}.json"
+    else:
+        # Fallback: try hospital_id
+        profile_file = PROFILES_DIR / f"{hospital_id}.json"
+    
     if not profile_file.exists():
         return None
     with open(profile_file, 'r') as f:
@@ -270,14 +298,14 @@ def get_sample_data(hospital_name, config, max_rows=5):
     # Check extracted folder first (for ZIPs)
     if extracted_dir.exists():
         for f in extracted_dir.iterdir():
-            if f.suffix.lower() in ['.csv', '.json']:
+            if f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
                 data_file = f
                 break
     
     # Check main folder
     if not data_file:
         for f in hospital_dir.iterdir():
-            if f.suffix.lower() in ['.csv', '.json']:
+            if f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
                 data_file = f
                 break
     
@@ -304,14 +332,13 @@ def get_sample_data(hospital_name, config, max_rows=5):
             desc_col = config.get('description_column', 'description')
             expected_columns.append(desc_col)
             
-            # Read CSV with header row from config (Phase 2 should have detected it correctly)
+            # Read CSV/Excel with header row from config (Phase 2 should have detected encoding correctly)
             # Read small sample for display
-            try:
+            if is_excel:
+                df = pd.read_excel(data_file, header=config_header_row, nrows=max_rows * 3, dtype=str)
+            else:
                 df = pd.read_csv(data_file, header=config_header_row, nrows=max_rows * 3, 
                                 dtype=str, encoding=encoding)
-            except:
-                df = pd.read_csv(data_file, header=config_header_row, nrows=max_rows * 3, 
-                                dtype=str, encoding='iso-8859-1')
             
             # OPTIMIZATION 1: Process entire file in chunks (10k rows at a time)
             # This avoids loading entire file into memory and is much faster
@@ -332,14 +359,20 @@ def get_sample_data(hospital_name, config, max_rows=5):
             payer_style = config.get('price_extraction', {}).get('payer_style', 'column')
             payer_col = config.get('price_extraction', {}).get('payer_column', 'payer_name')
             
-            print(f"  Processing CSV in chunks of {chunk_size:,} rows...")
+            file_type_label = "Excel" if is_excel else "CSV"
+            print(f"  Processing {file_type_label} in chunks of {chunk_size:,} rows...")
             
-            try:
+            if is_excel:
+                # Excel: pandas doesn't support chunksize, so read all and process in chunks manually
+                df_full = pd.read_excel(data_file, header=config_header_row, dtype=str)
+                # Create a list of chunks for iteration
+                chunks = []
+                for i in range(0, len(df_full), chunk_size):
+                    chunks.append(df_full.iloc[i:i+chunk_size])
+                chunk_reader = iter(chunks)
+            else:
                 chunk_reader = pd.read_csv(data_file, header=config_header_row, dtype=str, 
                                          encoding=encoding, chunksize=chunk_size)
-            except:
-                chunk_reader = pd.read_csv(data_file, header=config_header_row, dtype=str, 
-                                         encoding='iso-8859-1', chunksize=chunk_size)
             
             for chunk_idx, df_chunk in enumerate(chunk_reader):
                 # OPTIMIZATION 3: Use itertuples with index, then access chunk by position
@@ -432,12 +465,11 @@ def get_sample_data(hospital_name, config, max_rows=5):
             
             # For header-style payers: scan columns from first chunk to get payer list
             if payer_style == 'header':
-                try:
+                if is_excel:
+                    first_chunk = pd.read_excel(data_file, header=config_header_row, dtype=str, nrows=1)
+                else:
                     first_chunk = pd.read_csv(data_file, header=config_header_row, dtype=str, 
                                             encoding=encoding, nrows=1)
-                except:
-                    first_chunk = pd.read_csv(data_file, header=config_header_row, dtype=str, 
-                                            encoding='iso-8859-1', nrows=1)
                 
                 for col in first_chunk.columns:
                     col_str = str(col)

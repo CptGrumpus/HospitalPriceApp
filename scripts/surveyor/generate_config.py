@@ -76,14 +76,160 @@ def save_config_manifest(manifest):
         json.dump(manifest, f, indent=2)
 
 
+def sanitize_filename(name):
+    """Create a safe directory/file name (matches download_all.py)."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    return safe[:100]  # Limit length
+
+
 def load_profile(hospital_id):
     """Load a hospital's analysis profile."""
-    profile_file = PROFILES_DIR / f"{hospital_id}.json"
+    # First try to get sanitized name from analysis manifest
+    analysis_manifest = load_analysis_manifest()
+    analysis_info = analysis_manifest.get("analyses", {}).get(hospital_id, {})
+    sanitized_name = analysis_info.get("sanitized_name")
+    
+    if sanitized_name:
+        profile_file = PROFILES_DIR / f"{sanitized_name}.json"
+    else:
+        # Fallback: try hospital_id (for backward compatibility)
+        profile_file = PROFILES_DIR / f"{hospital_id}.json"
+    
     if not profile_file.exists():
         return None
     
     with open(profile_file, 'r') as f:
         return json.load(f)
+
+
+def validate_and_fix_template_for_json(config_template, format_type):
+    """
+    Pre-validate and fix config template for JSON files before sending to AI.
+    Removes any CSV-style column names (with | separators) from code_extraction.columns.
+    Returns (fixed_template, warnings)
+    """
+    warnings = []
+    if format_type != 'json':
+        return config_template, warnings
+    
+    code_ext = config_template.get('code_extraction', {})
+    if not code_ext:
+        return config_template, warnings
+    
+    columns = code_ext.get('columns', [])
+    if not columns:
+        return config_template, warnings
+    
+    # Check for CSV-style column names
+    fixed_columns = []
+    for col in columns:
+        col_str = str(col)
+        if '|' in col_str:
+            # Remove everything after | to get the base key name
+            base_key = col_str.split('|')[0]
+            fixed_columns.append(base_key)
+            warnings.append(f"Fixed template: '{col_str}' -> '{base_key}' (removed CSV-style separator)")
+        else:
+            fixed_columns.append(col)
+    
+    if warnings:
+        # Update the template
+        config_template = config_template.copy()
+        config_template['code_extraction'] = code_ext.copy()
+        config_template['code_extraction']['columns'] = fixed_columns
+    
+    return config_template, warnings
+
+
+def auto_fix_json_column_names(config, format_type):
+    """
+    Post-process AI response to auto-fix CSV-style column names in JSON configs.
+    Returns (fixed_config, fixes_applied)
+    """
+    fixes_applied = []
+    if format_type != 'json':
+        return config, fixes_applied
+    
+    code_ext = config.get('code_extraction', {})
+    if not code_ext:
+        return config, fixes_applied
+    
+    columns = code_ext.get('columns', [])
+    if not columns:
+        return config, fixes_applied
+    
+    # Fix CSV-style column names
+    fixed_columns = []
+    for col in columns:
+        col_str = str(col)
+        if '|' in col_str:
+            # Remove everything after | to get the base key name
+            base_key = col_str.split('|')[0]
+            fixed_columns.append(base_key)
+            fixes_applied.append(f"Auto-fixed: '{col_str}' -> '{base_key}'")
+        else:
+            fixed_columns.append(col)
+    
+    if fixes_applied:
+        # Update the config
+        config['code_extraction'] = code_ext.copy()
+        config['code_extraction']['columns'] = fixed_columns
+    
+    return config, fixes_applied
+
+
+def auto_fix_type_columns(config):
+    """
+    Post-process AI response to auto-fix type columns that are incorrectly placed
+    in the columns array instead of type_columns array.
+    
+    Works for ALL format types (CSV and JSON).
+    Detects type columns by patterns: '|type', ends with '|type', ends with '_type'
+    
+    Returns (fixed_config, fixes_applied)
+    """
+    fixes_applied = []
+    
+    code_ext = config.get('code_extraction', {})
+    if not code_ext:
+        return config, fixes_applied
+    
+    columns = code_ext.get('columns', [])
+    if not columns:
+        return config, fixes_applied
+    
+    # Detect type columns in columns array
+    code_only_columns = []
+    type_columns_found = []
+    
+    for col in columns:
+        col_str = str(col)
+        # Check if this looks like a type column
+        is_type_column = (
+            '|type' in col_str.lower() or 
+            col_str.endswith('|type') or 
+            col_str.endswith('_type')
+        )
+        
+        if is_type_column:
+            type_columns_found.append(col)
+            fixes_applied.append(f"Moved type column '{col_str}' from columns to type_columns")
+        else:
+            code_only_columns.append(col)
+    
+    if fixes_applied:
+        # Update the config
+        config['code_extraction'] = code_ext.copy()
+        config['code_extraction']['columns'] = code_only_columns
+        
+        # Add type columns to existing type_columns array (if any)
+        # Handle None explicitly (get() only uses default if key is missing, not if value is None)
+        existing_type_columns = code_ext.get('type_columns') or []
+        # Merge and deduplicate
+        all_type_columns = list(set(existing_type_columns + type_columns_found))
+        config['code_extraction']['type_columns'] = all_type_columns
+    
+    return config, fixes_applied
 
 
 def create_prompt(profile, hospital_name):
@@ -96,11 +242,17 @@ def create_prompt(profile, hospital_name):
     config_template = profile.get('config_template', {})
     
     # Summarize the profile for the AI
-    format_type = profile.get("format_type", "unknown")
+    format_type = profile.get("format_type") or "unknown"  # Handle None explicitly
     columns = profile.get("columns", [])
     column_analyses = profile.get("column_analyses", [])
     detected_patterns = profile.get("detected_patterns", {})
     total_rows = profile.get("total_rows") or profile.get("total_records") or 0
+    sample_record = profile.get("sample_record")
+    
+    # Pre-validate and fix template for JSON files
+    config_template, template_warnings = validate_and_fix_template_for_json(config_template, format_type)
+    if template_warnings:
+        print(f"  ⚠️  Template warnings: {', '.join(template_warnings)}")
     
     # Build column summary
     column_summary = []
@@ -112,6 +264,51 @@ def create_prompt(profile, hospital_name):
         column_summary.append(col_info)
     
     column_text = "\n".join(column_summary) if column_summary else "No column analysis available"
+    
+    # Build JSON structure explanation if this is a JSON file
+    json_structure_text = ""
+    if format_type == 'json' and sample_record:
+        json_structure_text = "\n"
+        json_structure_text += "═══════════════════════════════════════════════════════════════════════════════\n"
+        json_structure_text += "🚨 CRITICAL: JSON FILE STRUCTURE - READ THIS FIRST! 🚨\n"
+        json_structure_text += "═══════════════════════════════════════════════════════════════════════════════\n"
+        json_structure_text += "\n"
+        json_structure_text += "This is a JSON file. JSON files use NESTED STRUCTURES, not flat CSV columns.\n"
+        json_structure_text += "\n"
+        json_structure_text += "EXAMPLE JSON STRUCTURE:\n"
+        json_structure_text += "  {\n"
+        json_structure_text += "    \"code_information\": [\n"
+        json_structure_text += "      {\"code\": \"12345\", \"type\": \"CPT\"}\n"
+        json_structure_text += "    ],\n"
+        json_structure_text += "    \"drug_information\": {\n"
+        json_structure_text += "      \"unit\": \"200\",\n"
+        json_structure_text += "      \"type\": \"ML\"\n"
+        json_structure_text += "    }\n"
+        json_structure_text += "  }\n"
+        json_structure_text += "\n"
+        json_structure_text += "✅ CORRECT column names:\n"
+        json_structure_text += "  - code_extraction.columns: [\"code_information\"]\n"
+        json_structure_text += "  - code_extraction.columns: [\"drug_information\"]\n"
+        json_structure_text += "\n"
+        json_structure_text += "❌ WRONG column names (DO NOT USE):\n"
+        json_structure_text += "  - code_extraction.columns: [\"code_information|type\"]  ← WRONG!\n"
+        json_structure_text += "  - code_extraction.columns: [\"drug_information|type\"]  ← WRONG!\n"
+        json_structure_text += "  - code_extraction.columns: [\"code_information|1\"]    ← WRONG!\n"
+        json_structure_text += "\n"
+        json_structure_text += "KEY RULE: Use ONLY the top-level key name. The extraction code automatically\n"
+        json_structure_text += "handles nested structures. You do NOT need to specify nested paths with \"|\".\n"
+        json_structure_text += "\n"
+        json_structure_text += "ACTUAL SAMPLE RECORD FROM THIS FILE:\n"
+        # Show a simplified version of the sample record
+        if isinstance(sample_record, dict):
+            sample_str = json.dumps(sample_record, indent=2)
+            # Truncate if too long
+            if len(sample_str) > 500:
+                sample_str = sample_str[:500] + "\n  ... (truncated)"
+            json_structure_text += sample_str
+        json_structure_text += "\n"
+        json_structure_text += "═══════════════════════════════════════════════════════════════════════════════\n"
+        json_structure_text += "\n"
     
     # Detected patterns summary
     patterns_text = ""
@@ -159,16 +356,28 @@ def create_prompt(profile, hospital_name):
             patterns_text += f"\n⚠️ HEADER STYLE DETECTED: Found {len(header_cols)} columns with payer names in column names:\n"
             patterns_text += f"Examples: {header_cols[:5]}\n"
             patterns_text += "This indicates payer_style should be 'header', NOT 'column'!\n"
-        # JSON-specific patterns
-        if detected_patterns.get("has_nested_charges"):
-            patterns_text += "Has nested charge structure: Yes\n"
-        if detected_patterns.get("has_nested_code_info"):
-            patterns_text += "⚠️ JSON NESTED CODE STRUCTURE DETECTED: code_information is a nested array/list, NOT a CSV column!\n"
-            if detected_patterns.get("code_info_keys"):
-                patterns_text += f"Nested code structure keys: {detected_patterns['code_info_keys']}\n"
-            patterns_text += "For JSON files, use simple key names like 'code_information' (NOT 'code_information|1')\n"
-        if detected_patterns.get("record_keys"):
-            patterns_text += f"Record keys: {detected_patterns['record_keys'][:10]}\n"
+        # JSON-specific patterns - ENHANCED WARNINGS
+        if format_type == 'json':
+            patterns_text += "\n"
+            patterns_text += "🚨🚨🚨 JSON FILE DETECTED - CRITICAL RULES 🚨🚨🚨\n"
+            patterns_text += "\n"
+            if detected_patterns.get("has_nested_charges"):
+                patterns_text += "✓ Has nested charge structure: Yes\n"
+            if detected_patterns.get("has_nested_code_info"):
+                patterns_text += "✓ NESTED CODE STRUCTURE DETECTED: code_information is a nested array/list\n"
+                if detected_patterns.get("code_info_keys"):
+                    patterns_text += f"  Nested keys inside code_information: {detected_patterns['code_info_keys']}\n"
+                patterns_text += "  → Use column name: \"code_information\" (NOT \"code_information|type\" or \"code_information|1\")\n"
+            if detected_patterns.get("has_drug_info"):
+                patterns_text += "✓ DRUG INFORMATION DETECTED: drug_information is a nested object\n"
+                patterns_text += "  → Use column name: \"drug_information\" (NOT \"drug_information|type\" or \"drug_information|unit\")\n"
+            if detected_patterns.get("record_keys"):
+                patterns_text += f"  Top-level record keys: {detected_patterns['record_keys'][:10]}\n"
+                patterns_text += "  → These are the ONLY valid column names. Use them EXACTLY as shown.\n"
+            patterns_text += "\n"
+            patterns_text += "⚠️ REMEMBER: JSON files use simple key names. NO \"|\" separators!\n"
+            patterns_text += "   The extraction code handles nested structures automatically.\n"
+            patterns_text += "\n"
     
     # List ALL columns for code detection (define early for use in fallback check)
     all_columns = profile.get("columns", [])
@@ -205,11 +414,12 @@ def create_prompt(profile, hospital_name):
     prompt = f"""You are a data engineer completing an ingestion config for hospital pricing files.
 Phase 2 has already determined all structural values. You only need to refine semantic mappings.
 
-═══════════════════════════════════════════════════════════════════════════════
+{json_structure_text}═══════════════════════════════════════════════════════════════════════════════
 HOSPITAL INFORMATION
 ═══════════════════════════════════════════════════════════════════════════════
 Hospital: {hospital_name}
 Total Rows: {total_rows:,}
+Format Type: {(format_type or "unknown").upper()}
 
 ═══════════════════════════════════════════════════════════════════════════════
 CONFIG TEMPLATE (from Phase 2 - DO NOT CHANGE THESE VALUES)
@@ -239,9 +449,12 @@ The config template above has all deterministic values pre-filled. You need to:
 
 1. **REFINE code_extraction.columns**: 
    - Template has detected columns, but you should verify and list ALL code columns
-   - For JSON: Use simple key names (e.g., ["code_information"]) - NO "|" separators
-   - For CSV: List ALL code columns (e.g., ["code|1", "code|2", "code|3"])
-   - Add type_columns if code types are in separate columns (e.g., ["code|1|type"])
+   - 🚨 FOR JSON FILES: Use ONLY simple top-level key names (e.g., ["code_information"])
+     → DO NOT use "|" separators (e.g., NOT "code_information|type")
+     → DO NOT try to access nested fields with "|" (the extraction code handles this automatically)
+     → Examples: ["code_information"], ["drug_information"], ["procedure"]
+   - FOR CSV FILES: List ALL code columns with "|" separators (e.g., ["code|1", "code|2", "code|3"])
+   - Add type_columns if code types are in separate columns (e.g., ["code|1|type"]) - ONLY for CSV files
 
 2. **REFINE description_column**:
    - Template has a best guess, verify it's the best match
@@ -266,14 +479,33 @@ The config template above has all deterministic values pre-filled. You need to:
 6. **CALCULATE confidence**: Rate 0.0 to 1.0 based on how clear the mappings are
 
 ═══════════════════════════════════════════════════════════════════════════════
-CRITICAL RULES
+CRITICAL RULES - READ CAREFULLY
 ═══════════════════════════════════════════════════════════════════════════════
 
+🚨 JSON FILE RULES (if format_type == "json"):
+  1. code_extraction.columns MUST use simple key names ONLY
+     ✅ CORRECT: ["code_information"], ["drug_information"]
+     ❌ WRONG: ["code_information|type"], ["drug_information|unit"], ["code_information|1"]
+  2. DO NOT use "|" separators in column names - this is for CSV files only
+  3. The extraction code automatically handles nested JSON structures
+  4. You only need to specify the top-level key name
+
+📋 CSV FILE RULES (if format_type == "tall" or "wide"):
+  1. code_extraction.columns MUST use "|" separators for multi-column codes
+     ✅ CORRECT: ["code|1", "code|2", "code|3"]
+  2. type_columns can use "|" separators: ["code|1|type"]
+
+🔒 TEMPLATE VALUES (DO NOT CHANGE):
 - DO NOT change any values from the template that are already set
-- For JSON files: code_extraction.columns must NOT have "|" separators
-- For CSV files: code_extraction.columns must use "|" separators
 - payer_style and payer_column in template are CORRECT - use them as-is
 - setting_extraction.primary and fallback in template are CORRECT - use them as-is
+
+✅ VALIDATION CHECKLIST (before outputting):
+- [ ] If format_type == "json": No "|" in any code_extraction.columns
+- [ ] If format_type == "json": All column names match top-level keys from record_keys
+- [ ] description_column is set
+- [ ] price_extraction is complete
+- [ ] setting_extraction.primary is not None
 
 ═══════════════════════════════════════════════════════════════════════════════
 OUTPUT
@@ -367,19 +599,6 @@ def validate_config(config):
         
         if type_columns_in_columns:
             return False, f"Type columns found in code_extraction.columns array: {type_columns_in_columns}. Type columns must be in type_columns array, not in columns array."
-        
-        # CRITICAL: Reject configs where type columns are mixed into columns array
-        # Type columns should be in type_columns, not in columns
-        code_columns = code_ext.get('columns', [])
-        type_columns_in_columns = []
-        for col in code_columns:
-            col_str = str(col)
-            # Check if this looks like a type column
-            if '|type' in col_str.lower() or col_str.endswith('|type') or col_str.endswith('_type'):
-                type_columns_in_columns.append(col)
-        
-        if type_columns_in_columns:
-            return False, f"Type columns found in code_extraction.columns array: {type_columns_in_columns}. Type columns must be in type_columns array, not in columns array."
     
     # Check price_extraction structure
     price_ext = config.get('price_extraction')
@@ -430,6 +649,18 @@ def generate_config_for_hospital(hospital_id, hospital_name, profile):
         if parse_error:
             return None, parse_error
         
+        # Auto-fix JSON column names if needed (before validation)
+        format_type = profile.get("format_type", "unknown")
+        config, json_fixes = auto_fix_json_column_names(config, format_type)
+        if json_fixes:
+            print(f"  ⚠️  Auto-fixed JSON column names: {', '.join(json_fixes)}")
+        
+        # Auto-fix type columns that are incorrectly placed in columns array (before validation)
+        # This works for ALL format types (CSV and JSON)
+        config, type_fixes = auto_fix_type_columns(config)
+        if type_fixes:
+            print(f"  ⚠️  Auto-fixed type columns: {', '.join(type_fixes)}")
+        
         # Validate the config
         is_valid, validation_error = validate_config(config)
         if not is_valid:
@@ -438,6 +669,8 @@ def generate_config_for_hospital(hospital_id, hospital_name, profile):
         # MERGE with config template (template values take precedence)
         # This ensures all deterministic values from Phase 2 are preserved
         config_template = profile.get('config_template', {})
+        # Fix template for JSON files (defensive - template should already be correct from Phase 2)
+        config_template, _ = validate_and_fix_template_for_json(config_template, format_type)
         if config_template:
             # Merge template into config (template values override AI output)
             # This ensures format_type, header_row, encoding, payer_style, etc. are correct
@@ -555,8 +788,17 @@ def process_hospital(hospital_id, analysis_info, config_manifest):
         }
         return "failed"
     
-    # Save config
-    config_file = CONFIGS_DIR / f"{hospital_id}.json"
+    # Save config with sanitized hospital name (matching downloads folder)
+    # Get sanitized name from analysis manifest
+    analysis_manifest = load_analysis_manifest()
+    analysis_info = analysis_manifest.get("analyses", {}).get(hospital_id, {})
+    sanitized_name = analysis_info.get("sanitized_name")
+    
+    if not sanitized_name:
+        # Fallback: sanitize the name from config
+        sanitized_name = sanitize_filename(hospital_name)
+    
+    config_file = CONFIGS_DIR / f"{sanitized_name}.json"
     with open(config_file, 'w') as f:
         json.dump(config, f, indent=2)
     
@@ -566,6 +808,7 @@ def process_hospital(hospital_id, analysis_info, config_manifest):
     
     config_manifest["configs"][hospital_id] = {
         "name": hospital_name,
+        "sanitized_name": sanitized_name,  # Store for file lookup
         "status": "completed",
         "config_file": str(config_file),
         "format_type": config.get("format_type"),
