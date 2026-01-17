@@ -13,18 +13,39 @@ import pandas as pd
 def safe_get_value(row, col_name, default=None):
     """
     Safely get a value from a pandas Series or dict, handling column name checking properly.
+    Handles column name mismatches due to spaces (e.g., 'CHARGE' vs ' CHARGE ').
     """
     if isinstance(row, pd.Series):
         # For pandas Series, check index, not values
+        # First try exact match
         if col_name in row.index:
             val = row[col_name]
             if pd.isna(val):
                 return default
             return val
+        
+        # If exact match fails, try case-insensitive match with stripped spaces
+        col_name_normalized = col_name.strip().lower()
+        for idx_name in row.index:
+            if idx_name.strip().lower() == col_name_normalized:
+                val = row[idx_name]
+                if pd.isna(val):
+                    return default
+                return val
+        
         return default
     elif isinstance(row, dict):
-        # For dict, use get
-        return row.get(col_name, default)
+        # For dict, try exact match first
+        if col_name in row:
+            return row[col_name]
+        
+        # If exact match fails, try case-insensitive match with stripped spaces
+        col_name_normalized = col_name.strip().lower()
+        for key in row.keys():
+            if str(key).strip().lower() == col_name_normalized:
+                return row[key]
+        
+        return default
     else:
         # Fallback
         try:
@@ -97,7 +118,18 @@ def extract_code_from_value(val):
     
     # If it's a simple string/number, return as-is
     if isinstance(parsed, (str, int, float)):
-        return str(parsed).strip(), None
+        code_str = str(parsed).strip()
+        # Normalize float codes: "361.0" -> "361", but keep "361.5" as "361.5"
+        if isinstance(parsed, float):
+            try:
+                if parsed.is_integer():
+                    code_str = str(int(parsed))
+            except (ValueError, OverflowError):
+                pass  # Keep original string if conversion fails
+        # Normalize "nan" string
+        if code_str.lower() == 'nan':
+            return None, None
+        return code_str, None
     
     return None, None
 
@@ -187,6 +219,18 @@ def extract_code(row, config, is_json=False):
     # Build priority map (lower = better)
     priority_map = {code_type: i for i, code_type in enumerate(priority)}
     priority_map['UNKNOWN'] = 999
+    
+    # Add common code type aliases and variants to priority map
+    # Revenue Code variants (lower priority than Local, but better than UNKNOWN)
+    if 'RC' not in priority_map:
+        priority_map['RC'] = len(priority)  # After Local
+    if 'Revenue Code' not in priority_map:
+        priority_map['Revenue Code'] = len(priority)
+    if 'REVENUE' not in priority_map:
+        priority_map['REVENUE'] = len(priority)
+    # APC (Ambulatory Payment Classification) - lower priority than Local, but better than UNKNOWN
+    if 'APC' not in priority_map:
+        priority_map['APC'] = len(priority)  # After Local
     
     # Get available column names
     if isinstance(row, pd.Series):
@@ -285,9 +329,23 @@ def extract_code(row, config, is_json=False):
         # Try to extract code (handles JSON structures)
         code, code_type = extract_code_from_value(code_val)
         if not code:
+            # Convert to string and normalize numeric codes (remove .0 from floats)
             code = str(code_val).strip()
+            # Normalize float codes: "361.0" -> "361", but keep "361.5" as "361.5"
+            try:
+                # If it's a float representation of an integer, remove .0
+                if '.' in code:
+                    float_val = float(code)
+                    if float_val.is_integer():
+                        code = str(int(float_val))
+            except (ValueError, OverflowError):
+                pass  # Keep original string if conversion fails
         
-        if code and code != 'nan' and code != '':
+        # Normalize "nan" string (pandas NaN can become string "nan")
+        if code and code.lower() == 'nan':
+            code = None
+        
+        if code and code != '':
             # Try to get type from corresponding type column
             if type_columns and i < len(type_columns):
                 type_col = type_columns[i]
@@ -314,6 +372,12 @@ def extract_code(row, config, is_json=False):
                         if type_val is not None:
                             code_type = str(type_val).strip()
                             break
+            
+            # Normalize code types (DRG -> MS-DRG, they're the same thing)
+            if code_type:
+                code_type_upper = code_type.upper()
+                if code_type_upper == 'DRG':
+                    code_type = 'MS-DRG'  # Normalize generic DRG to MS-DRG
             
             # Check priority
             code_priority = priority_map.get(code_type or 'UNKNOWN', 999)
@@ -565,19 +629,35 @@ class PriceExtractor:
         payer_col = self.price_ext.get('payer_column', 'payer_name')
         percentage_col = self.price_ext.get('percentage_column', 'standard_charge|negotiated_percentage')
         methodology_col = self.price_ext.get('methodology_column', 'standard_charge|methodology')
+        min_col = self.price_ext.get('min_column', 'standard_charge|min')
+        max_col = self.price_ext.get('max_column', 'standard_charge|max')
         
         payer = safe_get_value(self.row, payer_col, 'Unknown') if payer_col and payer_col in self.available_cols else 'Unknown'
         
         # Try to extract dollar amount first
         amount = None
-        if price_col and price_col in self.available_cols:
-            price_val = safe_get_value(self.row, price_col)
-            if price_val is not None and str(price_val).strip() and str(price_val) != 'nan':
-                amount = str(price_val).strip()
+        if price_col:
+            # Check if column exists (handle space mismatches)
+            col_found = price_col in self.available_cols
+            if not col_found:
+                # Try case-insensitive match with stripped spaces
+                price_col_normalized = price_col.strip().lower()
+                for col in self.available_cols:
+                    if str(col).strip().lower() == price_col_normalized:
+                        col_found = True
+                        break
+            
+            if col_found:
+                price_val = safe_get_value(self.row, price_col)
+                if price_val is not None and str(price_val).strip() and str(price_val) != 'nan':
+                    amount = str(price_val).strip()
         
         # If no dollar amount, try to extract percentage
         percentage = None
         methodology = None
+        min_val = None
+        max_val = None
+        
         if not amount or amount == '':
             # Check for percentage column
             if percentage_col and percentage_col in self.available_cols:
@@ -590,15 +670,34 @@ class PriceExtractor:
                 meth_val = safe_get_value(self.row, methodology_col)
                 if meth_val is not None and str(meth_val).strip() and str(meth_val) != 'nan':
                     methodology = str(meth_val).strip()
+            
+            # Check for min/max columns
+            if min_col and min_col in self.available_cols:
+                min_val_raw = safe_get_value(self.row, min_col)
+                if min_val_raw is not None and str(min_val_raw).strip() and str(min_val_raw) != 'nan':
+                    min_val = str(min_val_raw).strip()
+            
+            if max_col and max_col in self.available_cols:
+                max_val_raw = safe_get_value(self.row, max_col)
+                if max_val_raw is not None and str(max_val_raw).strip() and str(max_val_raw) != 'nan':
+                    max_val = str(max_val_raw).strip()
         
-        # Only add if we have either amount or percentage
-        if amount or percentage:
+        # Only add if we have either amount or percentage or methodology or min/max
+        if amount or percentage or methodology or (min_val and max_val):
+            notes = None
+            if min_val and max_val:
+                notes = f"Min: ${min_val}, Max: ${max_val}"
+            if methodology and notes:
+                notes = f"Methodology: {methodology}, {notes}"
+            elif methodology and not notes:
+                notes = f"Methodology: {methodology}"
+            
             prices.append({
-                'payer': str(payer)[:20],
+                'payer': str(payer)[:40],  # Limit payer name length
                 'amount': amount,
                 'percentage': percentage,
                 'methodology': methodology,
-                'notes': None
+                'notes': notes
             })
         
         return prices

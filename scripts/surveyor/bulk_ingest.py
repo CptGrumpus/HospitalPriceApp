@@ -147,17 +147,17 @@ def find_data_file(hospital_name):
     if not hospital_dir.exists():
         return None
     
-        # Check extracted folder first (for ZIPs)
-        extracted_dir = hospital_dir / "extracted"
-        if extracted_dir.exists():
-            for f in sorted(extracted_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
-                if f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
-                    return f
-        
-        # Check main folder
-        for f in sorted(hospital_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
+    # Check extracted folder first (for ZIPs)
+    extracted_dir = hospital_dir / "extracted"
+    if extracted_dir.exists():
+        for f in sorted(extracted_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
             if f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
                 return f
+    
+    # Check main folder
+    for f in sorted(hospital_dir.iterdir(), key=lambda x: x.stat().st_size, reverse=True):
+        if f.is_file() and f.suffix.lower() in ['.csv', '.json', '.xlsx', '.xls']:
+            return f
     
     return None
 

@@ -806,6 +806,9 @@ def process_hospital(hospital_id, analysis_info, config_manifest):
     code_ext = config.get("code_extraction", {})
     price_ext = config.get("price_extraction", {})
     
+    # Preserve existing validated status and other metadata if regenerating
+    existing_entry = config_manifest["configs"].get(hospital_id, {})
+    
     config_manifest["configs"][hospital_id] = {
         "name": hospital_name,
         "sanitized_name": sanitized_name,  # Store for file lookup
@@ -817,6 +820,19 @@ def process_hospital(hospital_id, analysis_info, config_manifest):
         "confidence": config.get("confidence", "N/A"),
         "timestamp": datetime.now().isoformat()
     }
+    
+    # Preserve approval status and ingestion status if regenerating
+    if existing_entry:
+        if "validated" in existing_entry:
+            config_manifest["configs"][hospital_id]["validated"] = existing_entry["validated"]
+        if "validated_at" in existing_entry:
+            config_manifest["configs"][hospital_id]["validated_at"] = existing_entry["validated_at"]
+        if "rejected_at" in existing_entry:
+            config_manifest["configs"][hospital_id]["rejected_at"] = existing_entry["rejected_at"]
+        if "ingested" in existing_entry:
+            config_manifest["configs"][hospital_id]["ingested"] = existing_entry["ingested"]
+        if "ingested_at" in existing_entry:
+            config_manifest["configs"][hospital_id]["ingested_at"] = existing_entry["ingested_at"]
     
     print(f"  ✅ Config generated!")
     print(f"     Format: {config.get('format_type')}")
@@ -843,6 +859,12 @@ def process_hospital(hospital_id, analysis_info, config_manifest):
 
 def main():
     """Main config generation orchestrator."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate hospital configs using AI")
+    parser.add_argument('--hospital-id', type=str, help='Generate config for a specific hospital by ID')
+    args = parser.parse_args()
+    
     print("=" * 60)
     print("  AI CONFIG GENERATOR - Phase 3")
     print("  Using Llama 3 via Ollama")
@@ -868,6 +890,15 @@ def main():
         if v.get("status") == "completed"
     }
     
+    # Filter to specific hospital if requested
+    if args.hospital_id:
+        if args.hospital_id not in completed_analyses:
+            print(f"ERROR: Hospital ID '{args.hospital_id}' not found in analysis manifest")
+            print(f"Available hospitals: {list(completed_analyses.keys())[:5]}...")
+            sys.exit(1)
+        completed_analyses = {args.hospital_id: completed_analyses[args.hospital_id]}
+        print(f"Processing single hospital: {completed_analyses[args.hospital_id].get('name', args.hospital_id)}")
+    
     print(f"\nFound {len(completed_analyses)} analyzed hospitals")
     
     # Create configs directory
@@ -883,7 +914,26 @@ def main():
     print(f"Already configured: {already_done}")
     print(f"Remaining: {len(completed_analyses) - already_done}")
     
-    if already_done == len(completed_analyses):
+    # If processing single hospital, allow regeneration even if already done
+    if args.hospital_id and args.hospital_id in config_manifest["configs"]:
+        existing_entry = config_manifest["configs"][args.hospital_id]
+        if existing_entry.get("status") == "completed":
+            # Preserve approval status
+            validated_status = existing_entry.get("validated")
+            print(f"\n⚠️  Force regenerating config for {existing_entry.get('name', args.hospital_id)}")
+            if validated_status is not None:
+                print(f"   (Will preserve approval status: {validated_status})")
+            # Delete config file to force regeneration
+            config_file = existing_entry.get("config_file")
+            if config_file and Path(config_file).exists():
+                Path(config_file).unlink()
+            # Clear status so it gets regenerated
+            config_manifest["configs"][args.hospital_id]["status"] = "pending"
+            # Recalculate already_done
+            already_done = sum(1 for h_id in completed_analyses 
+                             if config_manifest["configs"].get(h_id, {}).get("status") == "completed")
+    
+    if already_done == len(completed_analyses) and not args.hospital_id:
         print("\n✅ All hospitals already have configs!")
         print(f"Configs saved in: {CONFIGS_DIR}")
         return

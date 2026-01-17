@@ -979,6 +979,17 @@ def analyze_json_file(file_path):
                 desc_cols = [a["column_name"] for a in profile["column_analyses"] 
                             if a["inferred_purpose"] == "description" or 'desc' in a["column_name"].lower()]
                 
+                # Detect best description column (same logic as CSV files)
+                description_column = None
+                if desc_cols:
+                    # Prefer columns with "description" in name, then "desc", then others
+                    for col in desc_cols:
+                        if 'description' in col.lower():
+                            description_column = col
+                            break
+                    if not description_column:
+                        description_column = desc_cols[0]
+                
                 # Check for nested structures common in hospital JSON
                 has_code_info = 'code_information' in all_keys
                 has_standard_charges = 'standard_charges' in all_keys
@@ -987,6 +998,7 @@ def analyze_json_file(file_path):
                 profile["detected_patterns"] = {
                     "code_columns": code_cols[:5],
                     "description_columns": desc_cols[:3],
+                    "description_column": description_column,  # Best guess (singular, for config template)
                     "has_nested_code_info": has_code_info,
                     "has_nested_charges": has_standard_charges,
                     "has_drug_info": has_drug_info,
@@ -1161,6 +1173,12 @@ def process_hospital(hospital_id, download_info):
 
 def main():
     """Main analysis orchestrator."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Analyze CSV/JSON/Excel files and generate profiles")
+    parser.add_argument('--hospital-id', type=str, help='Analyze a specific hospital by ID')
+    args = parser.parse_args()
+    
     print("=" * 60)
     print("  HOSPITAL FILE ANALYZER - Phase 2")
     print("=" * 60)
@@ -1173,6 +1191,15 @@ def main():
         k: v for k, v in download_manifest.get("downloads", {}).items()
         if v.get("status") == "completed"
     }
+    
+    # Filter to specific hospital if requested
+    if args.hospital_id:
+        if args.hospital_id not in completed_downloads:
+            print(f"ERROR: Hospital ID '{args.hospital_id}' not found in download manifest")
+            print(f"Available hospitals: {list(completed_downloads.keys())[:5]}...")
+            sys.exit(1)
+        completed_downloads = {args.hospital_id: completed_downloads[args.hospital_id]}
+        print(f"Processing single hospital: {completed_downloads[args.hospital_id].get('name', args.hospital_id)}")
     
     print(f"Found {len(completed_downloads)} completed downloads to analyze")
     

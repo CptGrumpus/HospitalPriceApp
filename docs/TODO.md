@@ -120,6 +120,37 @@ Come back to fix these later.
 
 ## Future Improvements
 
+### UI Enhancements
+- [ ] **Revenue Code Filtering**: Add UI filter to filter/search by revenue code (code|2, code|3)
+  - Revenue codes provide service location/type context (e.g., Pharmacy=771, Observation=762, Radiology=402)
+  - Useful for analytics and understanding service context
+  - Not a priority for basic price transparency, but interesting for advanced users
+  - Note: Revenue codes are supplementary metadata, not pricing dimensions
+  - Implementation: Add `revenue_code` field to Item table to store code|2/code|3 values
+
+### Database Schema Enhancements
+- [ ] **Modifiers Field**: Add `modifiers` field to Item table
+  - CPT/HCPCS modifiers (e.g., -25, -59, 'T') are important for accurate procedure identification
+  - Some procedures require modifiers to be complete (e.g., '99213-25' vs '99213')
+  - Priority: Medium - affects procedure accuracy
+  - Currently: Not extracted or stored
+  - Implementation: Extract from `modifiers` column or `standard_charges.modifiers` in JSON
+
+- [ ] **Drug Information Fields**: Add `drug_unit` and `drug_type` fields to Item table
+  - Drug unit of measurement (e.g., '50 ML', '7.2 ML', '60 UN')
+  - Drug type of measurement (e.g., 'ML', 'GR', 'UN')
+  - Priority: Low - only affects ~0.6% of rows (drugs only)
+  - Useful for drug pricing, less important for procedure pricing
+  - Currently: Not extracted or stored
+  - Implementation: Extract from `drug_information` object in JSON or `drug_unit_of_measurement`/`drug_type_of_measurement` columns in CSV
+
+- [ ] **Revenue Code Field**: Add `revenue_code` field to Item table
+  - Store code|2 and code|3 values when available
+  - Provides service location/type context (e.g., Pharmacy=771, Observation=762, Radiology=402)
+  - Priority: Low - analytics/filtering only, not needed for basic price transparency
+  - Currently: Not stored (extraction logic handles them but doesn't store)
+  - Implementation: Extract secondary/tertiary revenue codes from code|2/code|3 columns
+
 ### Download Improvements
 - [ ] Add retry logic with exponential backoff
 - [ ] Add Playwright fallback for 403 errors

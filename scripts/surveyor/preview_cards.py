@@ -150,10 +150,15 @@ def extract_mapped_sample(row, config):
     # Get code columns for debugging/display (always needed, not just on error)
     code_ext = config.get('code_extraction', {})
     columns = code_ext.get('columns', [])
-    if not columns:
+    
+    # Only use fallback if columns is not explicitly set (None vs empty list)
+    # Empty list means "no code columns" (valid for simple charge lists)
+    if not columns and 'columns' not in code_ext:
+        # Legacy fallback - only if columns key doesn't exist
         columns = [config.get('code_column', 'code|1')]
     
-    if code == 'UNKNOWN':
+    # Only show error if we expected code columns but didn't find them
+    if code == 'UNKNOWN' and columns:
         extraction_errors.append(f"Code columns {columns} not found or empty in available columns")
     
     # Extract description
@@ -190,6 +195,7 @@ def extract_mapped_sample(row, config):
                 amount = price_info.get('amount')
                 percentage = price_info.get('percentage')
                 methodology = price_info.get('methodology')
+                notes = price_info.get('notes')
                 
                 if amount:
                     try:
@@ -203,6 +209,11 @@ def extract_mapped_sample(row, config):
                     if methodology:
                         pct_str += f" ({methodology})"
                     formatted_prices.append(pct_str)
+                elif notes:
+                    # Show notes (min/max/methodology) when no exact price
+                    # Truncate long notes for display
+                    notes_display = notes[:60] + "..." if len(notes) > 60 else notes
+                    formatted_prices.append(f"{payer}: {notes_display}")
                 else:
                     formatted_prices.append(f"{payer}: N/A")
             else:
@@ -313,7 +324,10 @@ def get_sample_data(hospital_name, config, max_rows=5):
         return None, "No data file found"
     
     try:
-        if data_file.suffix.lower() == '.csv':
+        file_ext = data_file.suffix.lower()
+        is_excel = file_ext in ['.xlsx', '.xls']
+        
+        if file_ext in ['.csv', '.xlsx', '.xls']:
             # Get header row from config
             config_header_row = config.get('header_row', 0)
             encoding = config.get('encoding', 'utf-8')
@@ -391,8 +405,12 @@ def get_sample_data(hospital_name, config, max_rows=5):
                         all_unique_codes.add(code)
                         rows_with_code += 1
                         all_unique_code_types.add(mapped.get('code_type', 'UNKNOWN'))
-                        
-                        # Store sample rows for stratified sampling
+                    
+                    # Store sample rows for stratified sampling (include UNKNOWN codes if they have prices/descriptions)
+                    # This ensures files without codes still show sample data
+                    has_price = mapped.get('price_count', 0) > 0
+                    has_description = mapped.get('description', 'No Description') != 'No Description'
+                    if has_price or has_description:
                         if code not in sample_rows_by_code:
                             sample_rows_by_code[code] = []
                         if len(sample_rows_by_code[code]) < 3:  # Keep max 3 per code
@@ -552,8 +570,12 @@ def get_sample_data(hospital_name, config, max_rows=5):
                         all_unique_codes.add(code)
                         rows_with_code += 1
                         all_unique_code_types.add(mapped.get('code_type', 'UNKNOWN'))
-                        
-                        # Store sample rows for stratified sampling
+                    
+                    # Store sample rows for stratified sampling (include UNKNOWN codes if they have prices/descriptions)
+                    # This ensures files without codes still show sample data
+                    has_price = mapped.get('price_count', 0) > 0
+                    has_description = mapped.get('description', 'No Description') != 'No Description'
+                    if has_price or has_description:
                         if code not in sample_rows_by_code:
                             sample_rows_by_code[code] = []
                         if len(sample_rows_by_code[code]) < 3:  # Keep max 3 per code
@@ -1016,14 +1038,19 @@ def process_single_hospital_card(args):
                 if expected_cols:
                     sample_html += ', '.join([f'<code>{html.escape(c)}</code>' for c in expected_cols])
                 else:
-                    sample_html += 'None specified'
+                    # Empty list means file has no code columns (valid for simple charge lists)
+                    sample_html += '<span class="muted">None (file has no code columns)</span>'
                 sample_html += '</p>'
                 
                 sample_html += '<p><strong>Code columns (found):</strong> '
                 if code_cols_found:
                     sample_html += ', '.join([f'<code>{html.escape(c)}</code>' for c in code_cols_found])
-                else:
+                elif expected_cols:
+                    # Only show error if we expected columns but didn't find them
                     sample_html += '<span class="error-text">Not found</span>'
+                else:
+                    # No code columns expected, none found - this is expected
+                    sample_html += '<span class="muted">None (expected - file has no code columns)</span>'
                 sample_html += '</p>'
                 
                 sample_html += f'<p><strong>Description column:</strong> '
@@ -1123,8 +1150,13 @@ def process_single_hospital_card(args):
         return (hospital_id, error_card)
 
 
-def generate_html(manifest):
-    """Generate the preview cards HTML page."""
+def generate_html(manifest, args=None):
+    """Generate the preview cards HTML page.
+    
+    Args:
+        manifest: Config manifest dictionary
+        args: Command-line arguments (optional, for worker count)
+    """
     
     configs = manifest.get("configs", {})
     
@@ -1153,48 +1185,59 @@ def generate_html(manifest):
     total_to_process = len(completed_configs)
     
     print(f"Processing {total_to_process} hospital cards...")
-    print(f"Using parallel processing with {multiprocessing.cpu_count()} workers...")
     
     # Process hospitals in parallel
     cards_dict = {}  # hospital_id -> card_html
-    num_workers = min(12, multiprocessing.cpu_count())  # Use 12 workers or CPU count, whichever is less
+    # Determine number of workers (use --workers flag if provided, otherwise default)
+    if hasattr(args, 'workers') and args.workers is not None:
+        num_workers = max(1, min(args.workers, multiprocessing.cpu_count()))  # Clamp between 1 and CPU count
+        print(f"Using {num_workers} workers (specified via --workers flag)")
+    else:
+        num_workers = min(12, multiprocessing.cpu_count())  # Default: 12 workers or CPU count, whichever is less
+        print(f"Using {num_workers} workers (default: min(12, {multiprocessing.cpu_count()} CPUs))")
     
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        # Submit all tasks
-        future_to_hospital = {
-            executor.submit(process_single_hospital_card, (hospital_id, info)): hospital_id
-            for hospital_id, info in completed_configs
-        }
-        
-        # Process completed tasks as they finish
-        completed_count = 0
-        for future in as_completed(future_to_hospital):
-            hospital_id = future_to_hospital[future]
-            completed_count += 1
+    try:
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            future_to_hospital = {
+                executor.submit(process_single_hospital_card, (hospital_id, info)): hospital_id
+                for hospital_id, info in completed_configs
+            }
             
-            try:
-                result_id, card_html = future.result()
-                if card_html:
-                    cards_dict[result_id] = card_html
+            # Process completed tasks as they finish
+            completed_count = 0
+            for future in as_completed(future_to_hospital):
+                hospital_id = future_to_hospital[future]
+                completed_count += 1
                 
-                # Progress update every 10 completions
-                if completed_count % 10 == 0 or completed_count == total_to_process:
-                    print(f"  [{completed_count}/{total_to_process}] Completed processing...")
-            except Exception as e:
-                print(f"  ⚠️  Error processing {hospital_id}: {e}")
-                # Create error card
-                error_card = f'''
-                <div class="card pending" data-hospital-id="{hospital_id}">
-                    <div class="card-header">
-                        <h3>Error</h3>
-                        <span class="status-badge pending">⏳ Error</span>
+                try:
+                    result_id, card_html = future.result()
+                    if card_html:
+                        cards_dict[result_id] = card_html
+                    
+                    # Progress update every 10 completions
+                    if completed_count % 10 == 0 or completed_count == total_to_process:
+                        print(f"  [{completed_count}/{total_to_process}] Completed processing...")
+                except Exception as e:
+                    print(f"  ⚠️  Error processing {hospital_id}: {e}")
+                    # Create error card
+                    error_card = f'''
+                    <div class="card pending" data-hospital-id="{hospital_id}">
+                        <div class="card-header">
+                            <h3>Error</h3>
+                            <span class="status-badge pending">⏳ Error</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="error">Error: {html.escape(str(e))}</p>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <p class="error">Error: {html.escape(str(e))}</p>
-                    </div>
-                </div>
-                '''
-                cards_dict[hospital_id] = error_card
+                    '''
+                    cards_dict[hospital_id] = error_card
+    
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrupted by user (Ctrl+C). Saving progress...")
+        # Continue to build HTML with cards generated so far
+        print(f"  Generated {len(cards_dict)} cards before interruption")
     
     # Build cards_html in the same order as completed_configs
     for hospital_id, info in completed_configs:
@@ -1909,6 +1952,17 @@ def main():
         action='store_true',
         help='Generate HTML but do not start the validation server'
     )
+    parser.add_argument(
+        '--hospital-id',
+        type=str,
+        help='Generate preview card for a specific hospital by ID'
+    )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=None,
+        help='Number of parallel workers for card generation (default: min(12, CPU count))'
+    )
     args = parser.parse_args()
     
     print("=" * 60)
@@ -1918,6 +1972,17 @@ def main():
     # Load manifest
     manifest = load_config_manifest()
     configs = manifest.get("configs", {})
+    
+    # Filter to specific hospital if requested
+    if args.hospital_id:
+        if args.hospital_id not in configs:
+            print(f"ERROR: Hospital ID '{args.hospital_id}' not found in config manifest")
+            print(f"Available hospitals: {list(configs.keys())[:5]}...")
+            sys.exit(1)
+        configs = {args.hospital_id: configs[args.hospital_id]}
+        print(f"Processing single hospital: {configs[args.hospital_id].get('name', args.hospital_id)}")
+        # Update manifest to only include this hospital for HTML generation
+        manifest["configs"] = configs
     
     total = len(configs)
     completed = sum(1 for c in configs.values() if c.get("status") == "completed")
@@ -1929,12 +1994,27 @@ def main():
     
     # Generate HTML
     print("\nGenerating preview cards...")
-    html_content = generate_html(manifest)
+    html_content = generate_html(manifest, args)
     
-    with open(PREVIEW_HTML, 'w', encoding='utf-8') as f:
-        f.write(html_content)
-    
-    print(f"✅ Preview saved to: {PREVIEW_HTML}")
+    # Write to temp file first, then rename atomically (prevents corruption on Ctrl+C)
+    temp_file = PREVIEW_HTML.with_suffix('.tmp')
+    try:
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        # Atomic rename (only succeeds if write completed)
+        temp_file.replace(PREVIEW_HTML)
+        print(f"✅ Preview saved to: {PREVIEW_HTML}")
+    except KeyboardInterrupt:
+        # Clean up temp file if interrupted during write
+        if temp_file.exists():
+            temp_file.unlink()
+        print("\n⚠️  Interrupted during HTML write. Previous file unchanged.")
+        raise
+    except Exception as e:
+        # Clean up temp file on any error
+        if temp_file.exists():
+            temp_file.unlink()
+        raise
     
     # Start server (unless --no-server flag is set)
     if args.no_server:
