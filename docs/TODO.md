@@ -1,17 +1,106 @@
 # Hospital Price App - TODO List
 
 ## Project Status
-**Last Updated:** December 30, 2025
+**Last Updated:** January 23, 2026
 
 ### AI Surveyor Pipeline Progress
 | Phase | Status | Description |
 |-------|--------|-------------|
 | Phase 1 | ✅ Complete | Download Manager (CSV, JSON, ZIP support) |
-| Phase 1b | ✅ Complete | Download 167 Michigan hospitals (128 succeeded) |
-| Phase 2 | ✅ Complete | Deep CSV Analyzer - 128 profiles generated |
-| Phase 3 | ✅ Ready | AI Config Generator - Run when ready |
-| Phase 4 | ⏳ Pending | Preview Card Generator (human validation) |
-| Phase 5 | ⏳ Pending | Universal Bulk Ingestor |
+| Phase 1b | ✅ Complete | Download 167 Michigan hospitals (126 succeeded) |
+| Phase 2 | ✅ Complete | Deep CSV Analyzer - profiles generated |
+| Phase 3 | ✅ Complete | AI Config Generator |
+| Phase 4 | ✅ Complete | Preview Card Generator (126/129 validated) |
+| Phase 5 | ✅ Complete | Universal Bulk Ingestor |
+| Phase 6 | ✅ Complete | Performance Optimization (FTS5 + Pagination) |
+
+### Backend Features Implemented
+| Feature | Status | Notes |
+|---------|--------|-------|
+| FTS5 Full-Text Search | ✅ Done | 1.5ms search on 8M+ items |
+| Pagination API | ✅ Done | 50 results per page |
+| Lazy price loading | ✅ Done | Only loads prices for displayed items |
+| Database indexes | ✅ Done | Composite indexes for common queries |
+| Stats endpoint | ✅ Done | `/stats` for database info |
+
+### Current Database (After Reingestion)
+- **Items:** ~8M+ procedures
+- **Prices:** ~97M+ price entries
+- **Hospitals:** 126 Michigan hospitals
+- **Database Size:** ~10GB
+
+---
+
+## 🔴 P0 - Launch Critical (Do Before First Users)
+
+These are essential for a good first impression:
+
+| Feature | Status | Effort | Notes |
+|---------|--------|--------|-------|
+| Search examples on homepage | [ ] TODO | 1 hour | Show "Try: MRI, Knee replacement, 99213" |
+| Hospital count banner | [ ] TODO | 30 min | "Searching 126 Michigan hospitals" |
+| Data freshness date | [ ] TODO | 30 min | "Prices updated: January 2026" |
+| About/FAQ page | [ ] TODO | 2 hours | Explain why prices vary, how to use |
+| Mobile responsive check | [ ] TODO | 2 hours | 50%+ users on mobile |
+| Disclaimer footer | [ ] TODO | 30 min | Legal disclaimer about estimates |
+| Empty state improvement | [ ] TODO | 1 hour | Show suggestions when no search |
+
+---
+
+## 🟡 P1 - High Impact (First Week After Launch)
+
+| Feature | Status | Effort | Notes |
+|---------|--------|--------|-------|
+| **Price comparison view** | [ ] TODO | 4 hours | Compare same procedure across hospitals - KILLER FEATURE |
+| Insurance/payer filter | [ ] TODO | 2 hours | "Show me Blue Cross prices only" |
+| Cash price quick filter | [ ] TODO | 1 hour | Many users are uninsured/cash-pay |
+| Shareable URLs | [ ] TODO | 2 hours | `/search?q=MRI` for sharing results |
+| "Good deal" indicator | [ ] TODO | 3 hours | Show if price is above/below median |
+| No results suggestions | [ ] TODO | 1 hour | Helpful message when search fails |
+
+---
+
+## 🟢 P2 - Nice to Have (Month 1)
+
+| Feature | Status | Effort | Notes |
+|---------|--------|--------|-------|
+| Popular searches display | [ ] TODO | 2 hours | Show trending procedures |
+| Hospital detail pages | [ ] TODO | 4 hours | `/hospital/corewell-beaumont` |
+| Recent searches (local) | [ ] TODO | 2 hours | Remember user's searches |
+| Search autocomplete | [ ] TODO | 4 hours | Suggest as user types |
+| Geographic filtering | [ ] TODO | 4 hours | Filter by city/region |
+| Price alerts (email) | [ ] TODO | 8 hours | "Notify when price changes" |
+
+---
+
+## 🔵 P3 - Future Enhancements
+
+### API Endpoints to Add
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /hospitals` | List all hospitals with counts |
+| `GET /hospitals/{id}` | Hospital detail with all items |
+| `GET /payers` | List all insurance payers |
+| `GET /popular` | Most searched procedures |
+| `GET /compare?code=99213` | Compare one code across hospitals |
+
+### Database Schema Enhancements
+- [ ] **Modifiers Field**: Add `modifiers` field to Item table (CPT modifiers like -25, -59)
+- [ ] **Drug Information Fields**: Add `drug_unit` and `drug_type` fields
+- [ ] **Revenue Code Field**: Store code|2/code|3 for filtering
+- [ ] **Hospital Metadata**: Store city, address, phone from source data
+
+### UI Enhancements (Low Priority)
+- [ ] Revenue code filtering (for advanced users)
+- [ ] Price distribution histogram
+- [ ] Code-payer matrix view
+- [ ] Dark mode
+
+### SEO & Marketing
+- [ ] Meta tags (title, description, OpenGraph)
+- [ ] Sitemap for Google indexing
+- [ ] Schema.org markup for medical services
+- [ ] Analytics tracking (what people search for)
 
 ---
 
@@ -23,194 +112,55 @@
 
 ---
 
-## 🔴 HIGH PRIORITY: Fix Failed Hospital Downloads
+## Failed Hospital Downloads (Lower Priority)
 
-### 35 Failed Downloads to Fix Later
-
-These hospitals need manual URL updates. The URLs may have changed since the data was collected.
-
-#### HTTP 403 Errors (Access Forbidden) - 21 hospitals
-These sites are blocking automated requests. May need Playwright/browser automation.
+### HTTP 403 Errors (Access Forbidden) - 21 hospitals
+These sites block automated requests. May need Playwright/browser automation.
 
 | Hospital | Issue |
 |----------|-------|
-| MyMichigan Medical Center Alma | 403 Forbidden |
-| MyMichigan Medical Center Alpena | 403 Forbidden |
-| MyMichigan Medical Center Clare | 403 Forbidden |
-| MyMichigan Medical Center Gladwin | 403 Forbidden |
-| MyMichigan Medical Center Midland | 403 Forbidden |
-| MyMichigan Medical Center Saginaw | 403 Forbidden |
-| MyMichigan Medical Center Sault | 403 Forbidden |
-| MyMichigan Medical Center Standish | 403 Forbidden |
-| MyMichigan Medical Center Tawas | 403 Forbidden |
-| MyMichigan Medical Center Towne Centre | 403 Forbidden |
-| MyMichigan Medical Center West Branch | 403 Forbidden |
-| Select Specialty Hospital - Ann Arbor | 403 Forbidden |
-| Select Specialty Hospital - Battle Creek | 403 Forbidden |
-| Select Specialty Hospital - Flint | 403 Forbidden |
-| Select Specialty Hospital - Grosse Pointe | 403 Forbidden |
-| Select Specialty Hospital - Macomb County | 403 Forbidden |
-| Select Specialty Hospital - Northwest Detroit | 403 Forbidden |
-| Select Specialty Hospital - Oakland | 403 Forbidden |
-| Select Specialty Hospital - Saginaw | 403 Forbidden |
-| Select Specialty Hospital - Spectrum Health | 403 Forbidden |
-| Select Specialty Hospitals - Downriver | 403 Forbidden |
-| **University of Michigan Health System** | 403 Forbidden |
+| MyMichigan Medical Center (11 locations) | 403 Forbidden |
+| Select Specialty Hospital (10 locations) | 403 Forbidden |
+| **University of Michigan Health System** | 403 Forbidden - HIGH PRIORITY |
 
-#### HTTP 404 Errors (Not Found) - 10 hospitals
-URLs have changed. Need to find new URLs on hospital websites.
-
+### HTTP 404 Errors (Not Found) - 10 hospitals
 | Hospital | Old URL Domain |
 |----------|----------------|
-| Beacon Allegan | healthcare.ascension.org |
-| Beacon Dowagiac | healthcare.ascension.org |
-| Beacon Kalamazoo | healthcare.ascension.org |
-| Behavioral Center of Michigan | behavioralcenter.com |
-| Deckerville Community Hospital | aspirerhs.org |
-| Eaton Rapids Medical Center | quadax.revenuemasters.com |
-| Hills & Dales General Hospital | aspirerhs.org |
-| Marlette Regional Hospital | aspirerhs.org |
-| Schoolcraft Memorial Hospital | quadax.revenuemasters.com |
+| Beacon Allegan, Dowagiac, Kalamazoo | healthcare.ascension.org |
+| Deckerville, Hills & Dales, Marlette | aspirerhs.org |
+| Others | Various |
 
-#### HTTP 401 Errors (Unauthorized) - 2 hospitals
-| Hospital | Notes |
-|----------|-------|
-| Pioneer Specialty Hospital - Garden City | Requires authentication |
-| Pioneer Specialty Hospital - Pontiac | Requires authentication |
-
-#### SSL Certificate Error - 1 hospital
-| Hospital | Notes |
-|----------|-------|
-| Hurley Medical Center Main Campus | SSL cert verification failed |
-
-#### Other Errors - 1 hospital
-| Hospital | Notes |
-|----------|-------|
-| Pontiac General Hospital | Returns HTML instead of CSV |
-
-### 4 Hospitals with No Files Available
-These hospitals don't have downloadable files in the source data:
-- Henry Ford Behavioral Health Hospital
-- Munising Memorial Hospital
-- Samaritan Center
-- Spectrum Health Rehab and Nursing Center - Fuller Avenue
+### Other Errors
+- 2 hospitals: 401 Unauthorized (requires auth)
+- 1 hospital: SSL certificate error
+- 1 hospital: Returns HTML instead of CSV
+- 4 hospitals: No files available in source data
 
 ---
 
-## How to Fix Failed Downloads
+## Code Description Status
 
-### Option 1: Manual URL Update
-1. Visit the hospital's website
-2. Find the "Price Transparency" or "Standard Charges" page
-3. Get the direct CSV/JSON download link
-4. Update `data/michigan_hospitals_raw.json` with the new URL
-5. Re-run the download script
+### Current Coverage by Code Type
+| Code Type | Coverage | Notes |
+|-----------|----------|-------|
+| **CPT** | 97.3% | ✅ Well covered |
+| **HCPCS** | 97.8% | ✅ Well covered |
+| **MS-DRG** | 97.0% | ✅ Well covered |
+| **APR-DRG** | 94.8% | ✅ Well covered |
+| **APC** | 98.4% | ✅ Well covered |
+| **RC** | 86.4% | ✅ Well covered |
+| **NDC** | 40.5% | ⚠️ Partial (drugs) |
+| **CDM** | 5.0% | 🔴 Hospital-specific codes |
+| **ICD/Local** | 100% | ✅ Complete |
 
-### Option 2: Playwright Browser Automation
-For 403 errors (bot detection), create a Playwright script that:
-1. Opens the hospital website in a real browser
-2. Navigates to the price transparency page
-3. Downloads the file like a human would
+### CDM Code Challenge
+- CDM codes are hospital-specific (no standard definitions)
+- Priority: Low - less useful for price comparison
+- Future: Generate from hospital descriptions in raw files
 
-### Option 3: Skip for Now
-Focus on the 126 hospitals that downloaded successfully first.
-Come back to fix these later.
-
----
-
-## Future Improvements
-
-### UI Enhancements
-- [ ] **Revenue Code Filtering**: Add UI filter to filter/search by revenue code (code|2, code|3)
-  - Revenue codes provide service location/type context (e.g., Pharmacy=771, Observation=762, Radiology=402)
-  - Useful for analytics and understanding service context
-  - Not a priority for basic price transparency, but interesting for advanced users
-  - Note: Revenue codes are supplementary metadata, not pricing dimensions
-  - Implementation: Add `revenue_code` field to Item table to store code|2/code|3 values
-
-### Database Schema Enhancements
-- [ ] **Modifiers Field**: Add `modifiers` field to Item table
-  - CPT/HCPCS modifiers (e.g., -25, -59, 'T') are important for accurate procedure identification
-  - Some procedures require modifiers to be complete (e.g., '99213-25' vs '99213')
-  - Priority: Medium - affects procedure accuracy
-  - Currently: Not extracted or stored
-  - Implementation: Extract from `modifiers` column or `standard_charges.modifiers` in JSON
-
-- [ ] **Drug Information Fields**: Add `drug_unit` and `drug_type` fields to Item table
-  - Drug unit of measurement (e.g., '50 ML', '7.2 ML', '60 UN')
-  - Drug type of measurement (e.g., 'ML', 'GR', 'UN')
-  - Priority: Low - only affects ~0.6% of rows (drugs only)
-  - Useful for drug pricing, less important for procedure pricing
-  - Currently: Not extracted or stored
-  - Implementation: Extract from `drug_information` object in JSON or `drug_unit_of_measurement`/`drug_type_of_measurement` columns in CSV
-
-- [ ] **Revenue Code Field**: Add `revenue_code` field to Item table
-  - Store code|2 and code|3 values when available
-  - Provides service location/type context (e.g., Pharmacy=771, Observation=762, Radiology=402)
-  - Priority: Low - analytics/filtering only, not needed for basic price transparency
-  - Currently: Not stored (extraction logic handles them but doesn't store)
-  - Implementation: Extract secondary/tertiary revenue codes from code|2/code|3 columns
-
-### Download Improvements
-- [ ] Add retry logic with exponential backoff
-- [ ] Add Playwright fallback for 403 errors
-- [ ] Add SSL verification bypass option (with warning)
-- [ ] Create a "hospital URL updater" utility script
-- [ ] Set up scheduled re-scraping of hospitalpricingfiles.org for new URLs
-
-### Preview Cards Enhancements (Future Ideas)
-The following enhancements were discussed but not yet implemented. They can improve validation accuracy but may increase processing time:
-
-#### Phase 2 Enhancements (More Comprehensive)
-- [ ] **Price Range Statistics**: For each code, show min/max/median prices across all payers
-  - Display price distribution (histogram or quartiles)
-  - Show GROSS vs CASH vs negotiated comparison
-  - Example: "Price range: $242.66 - $373.32 (median: $335.99)"
-
-- [ ] **Code-Payer Matrix View**: For a sample code, show a table of all payers and their prices
-  - Makes payer diversity immediately clear
-  - Shows price variation across payers
-  - Format: Table with Payer | Price | Plan columns
-
-- [ ] **Extraction Success Metrics**: Per-row extraction status indicators
-  - Show ✅/❌ for each field (code, price, description, setting)
-  - Overall success rate: "98% of rows successfully extract all fields"
-  - Helps identify systematic extraction issues
-
-#### Phase 3 Enhancements (Advanced)
-- [ ] **Edge Case Detection**: Flag potential problematic rows
-  - Rows with placeholder prices (99999999)
-  - Rows with formula/algorithm prices
-  - Codes with unusually high/low prices
-  - Duplicate rows (same code+payer+price)
-  - Missing critical fields
-
-- [ ] **Data Quality Indicators**: Fill rate per column
-  - Show percentage of non-null values per column
-  - Highlight columns with low fill rates (< 80%)
-  - Example: "Code columns: 95% filled, Description: 98% filled, Prices: 87% filled"
-
-- [ ] **Ingestion Preview**: Estimated ingestion statistics
-  - "Will create ~18,640 unique items"
-  - "Will create ~484,580 price entries"
-  - "Will cover 26 payers"
-  - Helps validate scale expectations before ingestion
-
-- [ ] **Warning System**: Color-coded warnings for data quality
-  - 🟢 Green: All good
-  - 🟡 Yellow: Minor issues (e.g., 5% missing descriptions)
-  - 🔴 Red: Major issues (e.g., 30% missing codes)
-  - Summary of warnings at the top of each card
-
-- [ ] **Sample Size Control**: Configurable sampling options
-  - "Sample 50 rows" vs "Sample 500 rows" toggle
-  - "Sample across all payers" vs "Sample first N rows" option
-  - Trade-off: more data = longer processing time
-
-- [ ] **Comparison View**: Show same code across different contexts
-  - Different payers (price variation)
-  - Different settings (inpatient vs outpatient)
-  - Different code types (if multiple codes per row)
+### SNOMED Descriptions
+- User has access to SNOMED description sets
+- Future: Create ingestion script for SNOMED data
 
 ---
 
@@ -218,16 +168,39 @@ The following enhancements were discussed but not yet implemented. They can impr
 
 | Path | Description |
 |------|-------------|
+| `hospital.db` | SQLite database (main data) |
 | `data/downloads/` | Downloaded hospital files |
 | `data/downloads/download_manifest.json` | Download status tracking |
-| `data/michigan_hospitals_raw.json` | Source hospital list (needs URL updates) |
-| `scripts/surveyor/download_all.py` | Download manager script |
-| `scripts/surveyor/analyze_csv.py` | CSV analyzer (Phase 2) |
-| `scripts/surveyor/generate_config.py` | AI config generator (Phase 3) |
+| `data/michigan_hospitals_raw.json` | Source hospital list |
+| `data/configs/` | AI-generated extraction configs |
+| `data/config_manifest.json` | Validation status per hospital |
+| `scripts/surveyor/` | Pipeline scripts |
+| `scripts/create_fts_index.py` | FTS5 index builder |
+| `src/main.py` | FastAPI backend |
+| `src/static/index.html` | Frontend |
+
+---
+
+## Quick Commands
+
+```bash
+# Start the server
+python3 run.py
+
+# Rebuild FTS index (after reingestion)
+python3 scripts/create_fts_index.py
+
+# Run bulk ingestion
+python3 scripts/surveyor/bulk_ingest.py
+
+# Generate preview cards
+python3 scripts/surveyor/preview_cards.py
+```
 
 ---
 
 ## Notes
-- The download manifest tracks all attempts - just re-run `download_all.py` to retry failed downloads
-- Some hospitals (like U of M) are high-priority and worth extra effort to obtain manually
-
+- Database deleted and reingesting for clean slate (Jan 2026)
+- Beaumont hospitals are now "COREWELL HEALTH BEAUMONT" (2022 merger)
+- U of M main hospital needs manual download (403 blocked)
+- FTS5 index must be rebuilt after any reingestion

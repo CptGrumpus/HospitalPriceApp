@@ -27,7 +27,9 @@
         .search-container { max-width: 700px; margin: -30px auto 0; padding: 0 20px; position: relative; z-index: 10; }
         .search-box { display: flex; gap: 12px; background: white; padding: 8px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.12); }
         .search-box input { flex: 1; padding: 16px 20px; font-size: 16px; border: none; background: #f8f9fa; border-radius: 10px; }
-        .search-box button { padding: 16px 32px; background: #0f3460; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; }
+        .search-box button { padding: 16px 32px; background: #0f3460; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+        .search-box button:hover { background: #1a4a7e; }
+        .search-box button:disabled { background: #9ca3af; cursor: not-allowed; }
 
         .main-content { max-width: 900px; margin: 0 auto; padding: 30px 20px 60px; }
 
@@ -42,7 +44,13 @@
         }
         .filters-box input { flex: 1; min-width: 200px; }
 
-        .results-header { display: none; justify-content: space-between; margin-bottom: 16px; color: #6b7280; font-weight: 500; }
+        .results-header { 
+            display: none; justify-content: space-between; align-items: center;
+            margin-bottom: 16px; color: #6b7280; font-weight: 500; 
+            flex-wrap: wrap; gap: 8px;
+        }
+        .search-meta { font-size: 0.85rem; color: #9ca3af; }
+        .search-meta .fast { color: #059669; }
 
         .result-card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 16px; overflow: hidden; }
         .card-header { padding: 20px; display: flex; justify-content: space-between; align-items: flex-start; cursor: pointer; }
@@ -82,6 +90,33 @@
         .expand-hint { text-align: center; padding: 8px; color: #0f3460; font-size: 0.8rem; font-weight: 500; cursor: pointer; background: #f8f9fa; border-top: 1px solid #e5e7eb; }
         .expand-hint:hover { background: #f0f2f5; }
 
+        /* Pagination */
+        .pagination {
+            display: flex; justify-content: center; align-items: center;
+            gap: 8px; margin-top: 24px; flex-wrap: wrap;
+        }
+        .pagination button {
+            padding: 10px 16px; border: 1px solid #e5e7eb; background: white;
+            border-radius: 8px; cursor: pointer; font-weight: 500; color: #374151;
+            transition: all 0.2s;
+        }
+        .pagination button:hover:not(:disabled) { background: #f3f4f6; border-color: #d1d5db; }
+        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pagination button.active { background: #0f3460; color: white; border-color: #0f3460; }
+        .pagination .page-info { color: #6b7280; font-size: 0.9rem; }
+
+        /* Loading spinner */
+        .loading {
+            text-align: center; padding: 40px; color: #6b7280;
+        }
+        .spinner {
+            display: inline-block; width: 24px; height: 24px;
+            border: 3px solid #e5e7eb; border-top-color: #0f3460;
+            border-radius: 50%; animation: spin 1s linear infinite;
+            margin-right: 8px; vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
     </style>
 </head>
 <body>
@@ -96,7 +131,7 @@
     <div class="search-container">
         <div class="search-box">
             <input type="text" id="searchInput" placeholder="Search (e.g. MRI, Insulin, J1815...)" onkeypress="handleEnter(event)">
-            <button onclick="search()">Search</button>
+            <button id="searchBtn" onclick="search()">Search</button>
         </div>
     </div>
 
@@ -113,43 +148,91 @@
 
         <div id="resultsHeader" class="results-header">
             <span id="resultCount"></span>
+            <span id="searchMeta" class="search-meta"></span>
         </div>
 
         <div id="results"></div>
+        
+        <div id="pagination" class="pagination" style="display: none;"></div>
     </main>
 
     <script>
         let allData = [];
+        let currentQuery = '';
+        let currentPage = 1;
+        let totalPages = 0;
+        let totalResults = 0;
+        const RESULTS_PER_PAGE = 50;
 
-        async function search() {
+        async function search(page = 1) {
             const query = document.getElementById('searchInput').value;
             if (!query) return;
+
+            currentQuery = query;
+            currentPage = page;
 
             const resultsDiv = document.getElementById('results');
             const filtersBox = document.getElementById('filtersBox');
             const resultsHeader = document.getElementById('resultsHeader');
+            const pagination = document.getElementById('pagination');
+            const searchBtn = document.getElementById('searchBtn');
             
+            // Show loading state
+            searchBtn.disabled = true;
+            searchBtn.textContent = 'Searching...';
             filtersBox.style.display = 'none';
             resultsHeader.style.display = 'none';
-            resultsDiv.innerHTML = '<div style="text-align:center; padding:40px; color:#6b7280;">Searching...</div>';
+            pagination.style.display = 'none';
+            resultsDiv.innerHTML = `
+                <div class="loading">
+                    <span class="spinner"></span>
+                    Searching ${page > 1 ? `page ${page}...` : '...'}
+                </div>
+            `;
 
             try {
-                const res = await fetch(`/search?q=${encodeURIComponent(query)}`);
+                const res = await fetch(`/search?q=${encodeURIComponent(query)}&page=${page}&limit=${RESULTS_PER_PAGE}`);
                 const data = await res.json();
 
-                if (data.count === 0) {
+                // Reset button
+                searchBtn.disabled = false;
+                searchBtn.textContent = 'Search';
+
+                if (data.total === 0) {
                     resultsDiv.innerHTML = '<div style="text-align:center; padding:40px;">No results found.</div>';
                     return;
                 }
                 
                 allData = data.results;
+                totalPages = data.pages;
+                totalResults = data.total;
+                
                 populateFilters(allData);
                 filtersBox.style.display = 'flex';
                 resultsHeader.style.display = 'flex';
+                
+                // Update results header
+                const countEl = document.getElementById('resultCount');
+                const metaEl = document.getElementById('searchMeta');
+                
+                const start = (currentPage - 1) * RESULTS_PER_PAGE + 1;
+                const end = Math.min(currentPage * RESULTS_PER_PAGE, totalResults);
+                countEl.innerHTML = `Showing ${start}-${end} of ${totalResults.toLocaleString()} results`;
+                
+                // Show search performance
+                const ftsLabel = data.fts_enabled ? 
+                    '<span class="fast">⚡ FTS</span>' : 
+                    '<span style="color:#dc2626;">⚠️ Slow mode</span>';
+                metaEl.innerHTML = `${data.search_time_ms}ms ${ftsLabel}`;
+                
                 renderResults(allData);
+                renderPagination();
 
             } catch (e) {
-                resultsDiv.innerHTML = '<div style="text-align:center; color:red;">Error searching.</div>';
+                searchBtn.disabled = false;
+                searchBtn.textContent = 'Search';
+                resultsDiv.innerHTML = '<div style="text-align:center; color:red;">Error searching. Please try again.</div>';
+                console.error(e);
             }
         }
 
@@ -187,9 +270,6 @@
 
         function renderResults(data) {
             const resultsDiv = document.getElementById('results');
-            const countEl = document.getElementById('resultCount');
-            
-            countEl.innerHTML = `Found ${data.length} results`;
             
             if (data.length === 0) {
                 resultsDiv.innerHTML = '<div style="text-align:center; padding:40px;">No matches for filters.</div>';
@@ -197,6 +277,53 @@
             }
             
             resultsDiv.innerHTML = data.map(renderCard).join('');
+        }
+
+        function renderPagination() {
+            const pagination = document.getElementById('pagination');
+            
+            if (totalPages <= 1) {
+                pagination.style.display = 'none';
+                return;
+            }
+            
+            pagination.style.display = 'flex';
+            
+            let html = '';
+            
+            // Previous button
+            html += `<button onclick="search(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>← Previous</button>`;
+            
+            // Page numbers (show max 7 pages)
+            const maxVisible = 7;
+            let startPage = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+            let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+            
+            if (endPage - startPage < maxVisible - 1) {
+                startPage = Math.max(1, endPage - maxVisible + 1);
+            }
+            
+            if (startPage > 1) {
+                html += `<button onclick="search(1)">1</button>`;
+                if (startPage > 2) html += `<span class="page-info">...</span>`;
+            }
+            
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button onclick="search(${i})" class="${i === currentPage ? 'active' : ''}">${i}</button>`;
+            }
+            
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) html += `<span class="page-info">...</span>`;
+                html += `<button onclick="search(${totalPages})">${totalPages}</button>`;
+            }
+            
+            // Next button
+            html += `<button onclick="search(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>Next →</button>`;
+            
+            // Page info
+            html += `<span class="page-info">Page ${currentPage} of ${totalPages}</span>`;
+            
+            pagination.innerHTML = html;
         }
 
         function renderCard(item) {
@@ -230,9 +357,9 @@
                     <div class="result-card">
                     <div class="card-header" onclick="toggleBody(this)">
                         <div style="flex:1;">
-                                <div class="hospital-badge hosp-${item.hospital_id.toLowerCase()}">${item.hospital_id}</div>
-                            <div class="item-title">${title}</div>
-                            <div class="item-code">Code: ${item.code}</div>
+                                <div class="hospital-badge hosp-${item.hospital_id.toLowerCase().replace(/[^a-z]/g, '')}">${item.hospital_id}</div>
+                            <div class="item-title">${escapeHtml(title)}</div>
+                            <div class="item-code">Code: ${item.code || 'N/A'} ${item.code_type ? `(${item.code_type})` : ''}</div>
                                 </div>
                         <div class="price-summary">
                             <div class="price-range">${priceDisplay}</div>
@@ -244,20 +371,21 @@
                     </div>
                     
                     <div class="card-body">
-                        ${desc ? `<div class="definition-box"><strong>About:</strong> ${desc}</div>` : ''}
+                        ${desc ? `<div class="definition-box"><strong>About:</strong> ${escapeHtml(desc)}</div>` : ''}
                         
                             <table>
                             <thead><tr><th>Payer / Plan</th><th style="text-align:right">Price</th></tr></thead>
                                 <tbody>
-                                ${sortedPrices.map(p => `
+                                ${sortedPrices.slice(0, 20).map(p => `
                                         <tr class="${p.payer === 'DISCOUNTED_CASH' ? 'payer-cash' : ''}">
                                             <td>
-                                            <div>${p.payer} ${p.plan ? `(${p.plan})` : ''}</div>
-                                            ${p.notes ? `<span class="note-text">📝 ${p.notes}</span>` : ''}
+                                            <div>${escapeHtml(p.payer)} ${p.plan ? `(${escapeHtml(p.plan)})` : ''}</div>
+                                            ${p.notes ? `<span class="note-text">📝 ${escapeHtml(p.notes.substring(0, 100))}${p.notes.length > 100 ? '...' : ''}</span>` : ''}
                                             </td>
                                         <td class="price-col">${p.amount !== null ? formatPrice(p.amount) : 'Variable'}</td>
                                         </tr>
                                 `).join('')}
+                                ${sortedPrices.length > 20 ? `<tr><td colspan="2" style="text-align:center; color:#6b7280;">... and ${sortedPrices.length - 20} more prices</td></tr>` : ''}
                                 </tbody>
                             </table>
                     </div>
@@ -266,6 +394,13 @@
                     </div>
                     </div>
                 `;
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
         function formatPrice(val) {

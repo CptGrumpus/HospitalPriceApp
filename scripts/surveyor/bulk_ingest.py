@@ -805,14 +805,19 @@ def main():
             if args.force_all:
                 to_ingest.append((hospital_id, info))
             elif info.get('validated') == True:
+                # Skip already-ingested hospitals (unless --force-all)
+                if info.get('ingested') == True:
+                    continue  # Already ingested, skip it
                 to_ingest.append((hospital_id, info))
     
     # Stats
     total = len(configs)
     validated = sum(1 for c in configs.values() if c.get('validated') == True)
+    already_ingested = sum(1 for c in configs.values() if c.get('ingested') == True)
     
     print(f"\nTotal configs: {total}")
     print(f"Validated: {validated}")
+    print(f"Already ingested: {already_ingested}")
     print(f"To ingest: {len(to_ingest)}")
     
     if not to_ingest:
